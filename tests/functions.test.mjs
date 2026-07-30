@@ -318,6 +318,57 @@ test("Origin fora da allowlist é 403 e não gasta banco", async () => {
   assert.equal(db.calls.length, 0);
 });
 
+/* --------------------------- CORS same-origin ---------------------
+   Regressão: a allowlist dependia de URL/DEPLOY_PRIME_URL, que são env
+   de BUILD e não existem no runtime da function. Resultado: todo deploy
+   preview nascia com o próprio front bloqueado por CORS. Estes testes
+   simulam um host que NÃO está na allowlist fixa.                     */
+
+function postToHost(host, { origin, proto = "https" } = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    "x-nf-client-connection-ip": "203.0.113.7",
+    "x-forwarded-host": host,
+    "x-forwarded-proto": proto,
+  };
+  if (origin) headers.Origin = origin;
+  return new Request(`https://${host}/api/validate`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ code: "RLBK-NAOEXISTE1" }),
+  });
+}
+
+test("deploy preview: front do próprio host passa mesmo fora da allowlist fixa", async () => {
+  const host = "deploy-preview-1--recargagames-reload.netlify.app";
+  const res = await validate(postToHost(host, { origin: `https://${host}` }), ctx);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), `https://${host}`);
+  const body = await res.json();
+  assert.deepEqual(body, { valid: false, reason: "invalid_or_unavailable" });
+});
+
+test("same-origin não vira porta dos fundos: outro Origin no mesmo host é 403", async () => {
+  const host = "deploy-preview-1--recargagames-reload.netlify.app";
+  const res = await validate(
+    postToHost(host, { origin: "https://site-do-atacante.com" }),
+    ctx
+  );
+  assert.equal(res.status, 403);
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), null);
+});
+
+test("branch deploy e domínio canônico também passam", async () => {
+  for (const host of [
+    "feat-reload-mvp--recargagames-reload.netlify.app",
+    "reload.recargagames.com",
+  ]) {
+    db.attempts = 0;
+    const res = await validate(postToHost(host, { origin: `https://${host}` }), ctx);
+    assert.equal(res.status, 200, `${host} deveria passar`);
+  }
+});
+
 test("preflight de origin permitida ecoa só aquele origin", async () => {
   const res = await validate(post(null, { method: "OPTIONS" }), ctx);
   assert.equal(res.status, 204);
