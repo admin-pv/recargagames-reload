@@ -355,6 +355,16 @@ h3 {
   padding: 19px 16px;
 }
 
+/* Linha de finalidade do tratamento dos dados */
+.purpose-note {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-4);
+  border-left: 2px solid var(--border-strong);
+  padding-left: 11px;
+  margin-bottom: 6px;
+}
+
 /* Checkbox de confirmação */
 .check {
   display: flex;

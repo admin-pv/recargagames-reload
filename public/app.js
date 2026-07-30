@@ -35,10 +35,34 @@
     code: null,
     batchName: null,
     expiresAt: null,
+    purposeNote: null,
     contents: [],
     selectedId: null,
     busy: false,
   };
+
+  // Espelhos da validação do servidor (lib/forms.mjs). Se mudar lá, mudar aqui.
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
+
+  function isValidCpf(digits) {
+    if (!/^\d{11}$/.test(digits)) return false;
+    if (/^(\d)\1{10}$/.test(digits)) return false;
+    const checkDigit = (length) => {
+      let sum = 0;
+      for (let i = 0; i < length; i++) sum += Number(digits[i]) * (length + 1 - i);
+      const rest = (sum * 10) % 11;
+      return rest === 10 ? 0 : rest;
+    };
+    return checkDigit(9) === Number(digits[9]) && checkDigit(10) === Number(digits[10]);
+  }
+
+  function maskCpf(value) {
+    const digits = value.replace(/\D/g, "").slice(0, 11);
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+    if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+    return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+  }
 
   const el = (id) => document.getElementById(id);
 
@@ -55,6 +79,8 @@
     btnContinue: el("btn-continue"),
     formRedeem: el("form-redeem"),
     fields: el("fields"),
+    fieldsConsent: el("fields-consent"),
+    purposeNote: el("purpose-note"),
     summaryTitle: el("summary-title"),
     summaryBadge: el("summary-badge"),
     summaryIcon: el("summary-icon"),
@@ -216,6 +242,7 @@
     state.code = code;
     state.batchName = data.batch_name || "Voucher de Parceiro";
     state.expiresAt = data.expires_at;
+    state.purposeNote = data.purpose_note || null;
     state.contents = Array.isArray(data.contents) ? data.contents : [];
     state.selectedId = null;
 
@@ -295,10 +322,21 @@
     const isPin = content.delivery_type === "PIN";
     const fields = Array.isArray(content.fields) ? content.fields : [];
 
+    // Campos de dado em cima, consentimento embaixo, com a linha de
+    // finalidade entre os dois. Ordem definida aqui e não no forms-map
+    // porque é decisão de layout, não de contrato.
     refs.fields.textContent = "";
-    for (const spec of fields) refs.fields.append(fieldNode(spec));
+    refs.fieldsConsent.textContent = "";
+    for (const spec of fields) {
+      if (spec.type === "checkbox") refs.fieldsConsent.append(checkboxNode(spec));
+      else refs.fields.append(fieldNode(spec));
+    }
 
-    // PIN não pede nada: só resumo + confirmar. DTU pede os campos da
+    const hasDataFields = refs.fields.children.length > 0;
+    refs.purposeNote.hidden = !(state.purposeNote && hasDataFields);
+    if (state.purposeNote) refs.purposeNote.textContent = state.purposeNote;
+
+    // PIN não pede dado de entrega (só contato). DTU pede os campos da
     // categoria e SEMPRE mostra o aviso de entrega definitiva.
     refs.pinInfo.hidden = !isPin;
     refs.dtuNotice.hidden = isPin;
@@ -331,13 +369,26 @@
       input.maxLength = spec.max_length;
     }
     if (spec.placeholder) input.placeholder = spec.placeholder;
-    // type="text" + inputmode: teclado numérico no celular sem os spinners
-    // e sem as esquisitices de locale do type="number".
+
+    // type="text" + inputmode: teclado certo no celular, sem os spinners do
+    // type="number" nem as esquisitices de locale dele.
     if (spec.type === "number") {
       input.inputMode = "numeric";
       input.addEventListener("input", () => {
         input.value = input.value.replace(/[^0-9]/g, "");
       });
+    } else if (spec.type === "cpf") {
+      input.inputMode = "numeric";
+      input.maxLength = 14; // 000.000.000-00
+      input.addEventListener("input", () => {
+        input.value = maskCpf(input.value);
+      });
+    } else if (spec.type === "email") {
+      input.type = "email";
+      input.inputMode = "email";
+      input.autocomplete = "email";
+      input.spellcheck = false;
+      input.maxLength = 254;
     }
 
     const error = document.createElement("p");
@@ -362,20 +413,85 @@
     return wrap;
   }
 
+  /** Checkbox de consentimento (marketing_optin). Nasce sempre desmarcado. */
+  function checkboxNode(spec) {
+    const wrap = document.createElement("div");
+
+    const label = document.createElement("label");
+    label.className = "check";
+
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = `f-${spec.field}`;
+    input.checked = false;
+    input.dataset.field = spec.field;
+    input.dataset.type = "checkbox";
+    input.dataset.required = String(!!spec.required);
+
+    const text = document.createElement("span");
+    text.textContent = spec.label || spec.field;
+
+    const error = document.createElement("p");
+    error.className = "field-error";
+    error.id = `e-${spec.field}`;
+    error.hidden = true;
+    input.setAttribute("aria-describedby", error.id);
+
+    input.addEventListener("change", () => {
+      error.hidden = true;
+    });
+
+    label.append(input, text);
+    wrap.append(label, error);
+    return wrap;
+  }
+
+  function allFieldInputs() {
+    return [
+      ...refs.fields.querySelectorAll("input"),
+      ...refs.fieldsConsent.querySelectorAll("input"),
+    ];
+  }
+
   /** Espelho da validação do servidor. Retorna null se algo estiver errado. */
   function collectPlayerData() {
-    const inputs = Array.from(refs.fields.querySelectorAll("input"));
     const data = {};
     let firstBad = null;
 
-    for (const input of inputs) {
-      const value = input.value.trim();
-      const error = el(`e-${input.dataset.field}`);
+    for (const input of allFieldInputs()) {
+      const field = input.dataset.field;
+      const type = input.dataset.type;
+      const error = el(`e-${field}`);
       let message = null;
+
+      if (type === "checkbox") {
+        // Booleano sempre vai no payload, marcado ou não: o Brief 3 precisa
+        // saber que houve escolha explícita, e não ausência de resposta.
+        if (input.dataset.required === "true" && !input.checked) {
+          message = "É preciso marcar esta opção.";
+        } else {
+          data[field] = input.checked;
+        }
+        if (message) {
+          error.textContent = message;
+          error.hidden = false;
+          if (!firstBad) firstBad = input;
+        }
+        continue;
+      }
+
+      const value = input.value.trim();
+      const digits = value.replace(/\D/g, "");
 
       if (!value) {
         if (input.dataset.required === "true") message = "Preencha este campo.";
-      } else if (input.dataset.type === "number" && !/^[0-9]+$/.test(value)) {
+      } else if (type === "email" && !EMAIL_RE.test(value)) {
+        message = "Digite um email válido.";
+      } else if (type === "cpf" && digits.length !== 11) {
+        message = "O CPF precisa ter 11 dígitos.";
+      } else if (type === "cpf" && !isValidCpf(digits)) {
+        message = "CPF inválido — confira os números.";
+      } else if (type === "number" && !/^[0-9]+$/.test(value)) {
         message = "Use somente números.";
       } else if (input.dataset.minLength && value.length < Number(input.dataset.minLength)) {
         message = `Precisa ter pelo menos ${input.dataset.minLength} dígitos.`;
@@ -389,7 +505,7 @@
         error.hidden = false;
         if (!firstBad) firstBad = input;
       } else if (value) {
-        data[input.dataset.field] = value;
+        data[field] = type === "cpf" ? digits : value;
       }
     }
 
@@ -520,6 +636,7 @@
     state.code = null;
     state.batchName = null;
     state.expiresAt = null;
+    state.purposeNote = null;
     state.contents = [];
     state.selectedId = null;
     refs.code.value = "";

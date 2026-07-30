@@ -96,9 +96,31 @@ Códigos de teste (definidos em `TEST_CODES`):
 | `RLBK-CANCEL0001` | voucher cancelado → mensagem genérica |
 | `RLBK-VENCIDO001` | lote vencido → mensagem genérica |
 | `RLBK-PROCESS001` | resgate em andamento → mensagem específica |
+| `RLBK-SKUNOVO001` | 1 SKU mapeado + 1 SKU fora do forms-map → só o mapeado aparece |
+| `RLBK-SOSKUNOVO1` | só SKU fora do forms-map → mensagem genérica |
 | qualquer outro | inexistente → mensagem genérica |
 
+CPF de teste válido: `111.444.777-35`. Inválido: `111.444.777-36`.
+
 `GET /dev/reset` zera o contador de rate limit local.
+
+## O formulário (tela 3)
+
+Os campos vêm todos do servidor, já resolvidos, em `forms-map.json`:
+
+- **campos de entrega**, por categoria de SKU — hoje só Free Fire (`user_id`).
+  Só o fluxo DTU tem esses; PIN não pede nada de entrega.
+- **campos comuns**, pedidos em todo resgate (DTU e PIN igual):
+  `email` (obrigatório, validação de formato), `cpf` (opcional, validação de
+  dígito verificador quando preenchido) e `marketing_optin` (checkbox,
+  **desmarcado por padrão**).
+
+Abaixo dos campos de dado pessoal vai a linha de finalidade
+(`purpose_note`, também servida pelo `forms-map.json`), e o consentimento de
+marketing fica separado dela. No fluxo DTU, o aviso de entrega definitiva
+(Check ID OFF) e o checkbox de conferência vêm depois.
+
+Neste brief os dados são validados e **descartados** — persistência é Brief 3.
 
 ## Decisões de segurança (não afrouxar sem conversa)
 
@@ -114,8 +136,15 @@ Códigos de teste (definidos em `TEST_CODES`):
   vira oráculo de código.
 - **`/api/redeem` também é rate limited**, no mesmo balde do validate — senão
   seria o mesmo oráculo por outra porta.
+- **SKU DTU fora do `forms-map.json` é recusado** (`fallback_category: null`),
+  não cai em formulário genérico. Pedir o campo errado entrega no lugar errado,
+  e DTU não tem reembolso. Recusa o conteúdo, não o lote: os outros conteúdos
+  válidos do mesmo voucher continuam resgatáveis. O SKU vai pro log de erro.
 - **Log nunca tem código completo**: só os 4 primeiros chars + HMAC curto
   (HMAC, não SHA nu, pra que o log não seja reversível por força bruta).
+- **Log nunca tem email, CPF ou `user_id`** — mesma regra do código. No log de
+  resgate vão só os *nomes* dos campos preenchidos, nunca valores. O
+  `player_data` saneado existe só em memória, dentro da request.
 - **CORS restrito** ao domínio canônico + as URLs de deploy do próprio site
   (`URL`/`DEPLOY_PRIME_URL`). `localhost` só entra em contexto `dev`.
 - **A chave admin do proxy não existe neste repo.** A Lapak é Brief 3;

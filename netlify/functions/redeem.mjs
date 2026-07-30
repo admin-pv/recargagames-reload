@@ -130,7 +130,17 @@ export default async (req, context) => {
     return json(200, { status: "invalid_or_unavailable" }, cors);
   }
 
+  // Espelha o fail-closed do /api/validate: conteúdo sem formulário
+  // resolvível é recusado, nunca resgatado com campo adivinhado.
   const form = fieldsForContent(content);
+  if (!form.ok) {
+    console.error(
+      `[redeem] ${form.reason}: conteúdo recusado, sku=${content.product_code} content_id=${content.id}`
+    );
+    logEvent({ evt: "redeem", result: "invalid_or_unavailable", code: label, cause: form.reason });
+    return json(200, { status: "invalid_or_unavailable" }, cors);
+  }
+
   const checked = validatePlayerData(form.fields, body.value.player_data);
   if (!checked.ok) {
     logEvent({ evt: "redeem", result: "invalid_payload", code: label });
@@ -149,6 +159,9 @@ export default async (req, context) => {
   // PIN quando delivery_type='PIN', e fechar em USADO ou voltar pra
   // EMITIDO em caso de erro. NADA disso acontece neste brief.
   // -------------------------------------------------------------------
+  // `fields` são só os NOMES dos campos preenchidos. Valor de email e CPF
+  // não entra em log em nenhuma hipótese — mesma regra do código do voucher.
+  // checked.clean carrega dado pessoal e fica só em memória, nesta request.
   logEvent({
     evt: "redeem",
     result: "not_implemented",

@@ -20,9 +20,43 @@ const ORIGIN = "https://reload.recargagames.com";
 const CONTENT_DTU = "11111111-1111-4111-8111-111111111111";
 const CONTENT_PIN = "22222222-2222-4222-8222-222222222222";
 const CONTENT_OTHER_BATCH = "33333333-3333-4333-8333-333333333333";
+const CONTENT_UNMAPPED = "44444444-4444-4444-8444-444444444444";
+
+// Dados válidos de referência. O CPF 111.444.777-35 é o CPF de teste
+// canônico (dígitos verificadores corretos, não é de ninguém).
+const VALID_EMAIL = "jogador@email.com";
+const VALID_CPF = "111.444.777-35";
+const VALID_CPF_DIGITS = "11144477735";
+const okPlayer = (over = {}) => ({
+  user_id: "13846816197",
+  email: VALID_EMAIL,
+  cpf: VALID_CPF,
+  marketing_optin: false,
+  ...over,
+});
 
 const future = new Date(Date.now() + 30 * 86400000).toISOString();
 const past = new Date(Date.now() - 86400000).toISOString();
+
+const dtuContent = () => ({
+  id: CONTENT_DTU,
+  display_label: "110 Diamantes Free Fire",
+  delivery_type: "DTU",
+  product_code: "FF100_10-S116-br",
+});
+const pinContent = () => ({
+  id: CONTENT_PIN,
+  display_label: "Cartão Free Fire 100 Diamantes (PIN)",
+  delivery_type: "PIN",
+  product_code: "FFBV100-S22-br",
+});
+// SKU DTU de jogo que ainda não está no forms-map.json.
+const unmappedContent = () => ({
+  id: CONTENT_UNMAPPED,
+  display_label: "50 Diamantes Mobile Legends",
+  delivery_type: "DTU",
+  product_code: "MLBB50-S9-br",
+});
 
 function batch(overrides = {}) {
   return {
@@ -30,20 +64,7 @@ function batch(overrides = {}) {
     name: "Lote Teste Reload",
     status: "active",
     expires_at: future,
-    contents: [
-      {
-        id: CONTENT_DTU,
-        display_label: "110 Diamantes Free Fire",
-        delivery_type: "DTU",
-        product_code: "FF100_10-S116-br",
-      },
-      {
-        id: CONTENT_PIN,
-        display_label: "Cartão Free Fire 100 Diamantes (PIN)",
-        delivery_type: "PIN",
-        product_code: "FFBV100-S22-br",
-      },
-    ],
+    contents: [dtuContent(), pinContent()],
     ...overrides,
   };
 }
@@ -56,6 +77,18 @@ const VOUCHERS = {
   "RLBK-VENCIDO001": { id: "v5", status: "EMITIDO", batch: batch({ expires_at: past }) },
   "RLBK-LOTECANC01": { id: "v6", status: "EMITIDO", batch: batch({ status: "cancelled" }) },
   "RLBK-SEMCONTEUD": { id: "v7", status: "EMITIDO", batch: batch({ contents: [] }) },
+  // Lote com 1 SKU mapeado + 1 SKU fora do forms-map.
+  "RLBK-SKUNOVO001": {
+    id: "v8",
+    status: "EMITIDO",
+    batch: batch({ contents: [dtuContent(), unmappedContent()] }),
+  },
+  // Lote cujo único conteúdo está fora do forms-map.
+  "RLBK-SOSKUNOVO1": {
+    id: "v9",
+    status: "EMITIDO",
+    batch: batch({ contents: [unmappedContent()] }),
+  },
 };
 
 const db = { attempts: 0, rateFails: false, calls: [], logs: [] };
@@ -85,7 +118,8 @@ globalThis.fetch = async (url) => {
   throw new Error(`fetch inesperado no teste: ${target}`);
 };
 
-// Captura de log pra provar que código completo nunca é logado.
+// Captura de log pra provar que código completo e dado pessoal nunca são
+// logados.
 for (const level of ["log", "warn", "error"]) {
   const original = console[level];
   console[level] = (...args) => {
@@ -137,13 +171,42 @@ test("código válido devolve o lote com os dois conteúdos e os campos do form"
 
   const dtu = body.contents.find((c) => c.delivery_type === "DTU");
   const pin = body.contents.find((c) => c.delivery_type === "PIN");
+
+  // DTU: campo de entrega (user_id) + os campos comuns.
+  assert.deepEqual(
+    dtu.fields.map((f) => f.field),
+    ["user_id", "email", "cpf", "marketing_optin"]
+  );
   assert.equal(dtu.display_label, "110 Diamantes Free Fire");
-  assert.equal(dtu.fields.length, 1);
-  assert.equal(dtu.fields[0].field, "user_id");
   assert.equal(dtu.fields[0].type, "number");
   assert.equal(dtu.fields[0].required, true);
-  // PIN não pede nada.
-  assert.deepEqual(pin.fields, []);
+
+  // PIN: não pede dado de entrega, mas pede os comuns.
+  assert.deepEqual(
+    pin.fields.map((f) => f.field),
+    ["email", "cpf", "marketing_optin"]
+  );
+});
+
+test("contrato dos campos comuns: email obrigatório, CPF opcional, optin desmarcado", async () => {
+  const { body } = await callValidate({ code: "RLBK-VALIDO0001" });
+  const byField = Object.fromEntries(
+    body.contents[0].fields.map((f) => [f.field, f])
+  );
+
+  assert.equal(byField.email.type, "email");
+  assert.equal(byField.email.required, true);
+
+  assert.equal(byField.cpf.type, "cpf");
+  assert.equal(byField.cpf.required, false);
+
+  assert.equal(byField.marketing_optin.type, "checkbox");
+  assert.equal(byField.marketing_optin.required, false);
+});
+
+test("resposta traz a linha de finalidade do tratamento dos dados", async () => {
+  const { body } = await callValidate({ code: "RLBK-VALIDO0001" });
+  assert.match(body.purpose_note, /validação do resgate e prevenção a fraude/i);
 });
 
 test("product_code NUNCA vai pro front", async () => {
@@ -194,6 +257,25 @@ test("lote sem conteúdo cai na genérica e loga erro de cadastro", async () => 
   const { body } = await callValidate({ code: "RLBK-SEMCONTEUD" });
   assert.deepEqual(body, { valid: false, reason: "invalid_or_unavailable" });
   assert.ok(db.logs.some((l) => l.includes("batch_without_contents")));
+});
+
+/* --------------- fail-closed de SKU fora do forms-map -------------- */
+
+test("SKU DTU fora do forms-map é recusado, não vira formulário genérico", async () => {
+  const { body } = await callValidate({ code: "RLBK-SKUNOVO001" });
+  assert.equal(body.valid, true);
+  // O conteúdo mapeado continua ofertado; o não mapeado desaparece.
+  assert.equal(body.contents.length, 1);
+  assert.equal(body.contents[0].id, CONTENT_DTU);
+  // E o SKU problemático é logado pra ser mapeado.
+  assert.ok(db.logs.some((l) => l.includes("unmapped_sku") && l.includes("MLBB50-S9-br")));
+});
+
+test("lote cujo único conteúdo é SKU não mapeado devolve a genérica", async () => {
+  const { res, body } = await callValidate({ code: "RLBK-SOSKUNOVO1" });
+  assert.equal(res.status, 200);
+  assert.deepEqual(body, { valid: false, reason: "invalid_or_unavailable" });
+  assert.ok(db.logs.some((l) => l.includes("all_contents_refused")));
 });
 
 test("código malformado não chega ao banco e responde a genérica", async () => {
@@ -263,31 +345,42 @@ test("log nunca contém o código completo, só 4 chars + hash", async () => {
 
 /* -------------------------- /api/redeem --------------------------- */
 
-test("stub do redeem: DTU com user_id válido devolve not_implemented", async () => {
+test("stub do redeem: DTU com payload completo devolve not_implemented", async () => {
   const { res, body } = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
-    player_data: { user_id: "13846816197" },
+    player_data: okPlayer(),
   });
   assert.equal(res.status, 200);
   assert.equal(body.status, "not_implemented");
   assert.match(body.message, /manutenção/i);
 });
 
-test("stub do redeem: PIN não exige nenhum campo", async () => {
-  const { body } = await callRedeem({
+test("stub do redeem: PIN não exige user_id, mas exige email", async () => {
+  const ok = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: true },
+  });
+  assert.equal(ok.body.status, "not_implemented");
+
+  db.attempts = 0;
+  const semEmail = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_PIN,
     player_data: {},
   });
-  assert.equal(body.status, "not_implemented");
+  assert.equal(semEmail.res.status, 400);
+  assert.ok(semEmail.body.errors.email);
+  // PIN não pede user_id, então não pode reclamar dele.
+  assert.equal(semEmail.body.errors.user_id, undefined);
 });
 
-test("redeem revalida o formulário: user_id vazio e não-numérico são 400", async () => {
+test("redeem revalida user_id: vazio e não-numérico são 400", async () => {
   const vazio = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
-    player_data: {},
+    player_data: okPlayer({ user_id: "" }),
   });
   assert.equal(vazio.res.status, 400);
   assert.equal(vazio.body.status, "invalid_payload");
@@ -297,20 +390,138 @@ test("redeem revalida o formulário: user_id vazio e não-numérico são 400", a
   const texto = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
-    player_data: { user_id: "abc123" },
+    player_data: okPlayer({ user_id: "abc123" }),
   });
   assert.equal(texto.res.status, 400);
   assert.match(texto.body.errors.user_id, /números/i);
+});
+
+test("email: obrigatório e com validação de formato", async () => {
+  const casos = ["", "jogador", "jogador@", "jogador@email", "a@b.c d", "@email.com"];
+  for (const email of casos) {
+    db.attempts = 0;
+    const { res, body } = await callRedeem({
+      code: "RLBK-VALIDO0001",
+      content_id: CONTENT_DTU,
+      player_data: okPlayer({ email }),
+    });
+    assert.equal(res.status, 400, `deveria recusar email ${JSON.stringify(email)}`);
+    assert.ok(body.errors.email, `faltou erro de email pra ${JSON.stringify(email)}`);
+  }
+
+  db.attempts = 0;
+  const ok = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_DTU,
+    player_data: okPlayer({ email: "Jogador.Teste+tag@Sub.Dominio.com.br" }),
+  });
+  assert.equal(ok.body.status, "not_implemented");
+});
+
+test("CPF: opcional quando vazio, validado por dígito verificador quando preenchido", async () => {
+  // Ausente e string vazia passam — é opcional.
+  for (const player of [okPlayer({ cpf: undefined }), okPlayer({ cpf: "" })]) {
+    db.attempts = 0;
+    const { res, body } = await callRedeem({
+      code: "RLBK-VALIDO0001",
+      content_id: CONTENT_DTU,
+      player_data: player,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(body.status, "not_implemented");
+  }
+
+  // Dígito verificador errado, tamanho errado e repetido são recusados.
+  for (const cpf of ["111.444.777-36", "11144477734", "123456789", "111.111.111-11"]) {
+    db.attempts = 0;
+    const { res, body } = await callRedeem({
+      code: "RLBK-VALIDO0001",
+      content_id: CONTENT_DTU,
+      player_data: okPlayer({ cpf }),
+    });
+    assert.equal(res.status, 400, `deveria recusar CPF ${cpf}`);
+    assert.ok(body.errors.cpf, `faltou erro de CPF pra ${cpf}`);
+  }
+
+  // Com e sem máscara, o CPF válido passa.
+  for (const cpf of [VALID_CPF, VALID_CPF_DIGITS]) {
+    db.attempts = 0;
+    const { body } = await callRedeem({
+      code: "RLBK-VALIDO0001",
+      content_id: CONTENT_DTU,
+      player_data: okPlayer({ cpf }),
+    });
+    assert.equal(body.status, "not_implemented");
+  }
+});
+
+test("marketing_optin sempre entra no payload limpo, marcado ou não", async () => {
+  for (const enviado of [true, false, undefined]) {
+    db.attempts = 0;
+    db.logs = [];
+    const { body } = await callRedeem({
+      code: "RLBK-VALIDO0001",
+      content_id: CONTENT_DTU,
+      player_data: okPlayer({ marketing_optin: enviado }),
+    });
+    assert.equal(body.status, "not_implemented");
+    const line = db.logs.find((l) => l.includes("not_implemented"));
+    // A chave aparece nos três casos, inclusive quando o cliente não manda
+    // nada: consentimento é escolha explícita, não ausência de resposta.
+    // (O VALOR não vai pro log — ver o teste de validatePlayerData abaixo.)
+    assert.ok(JSON.parse(line).fields.includes("marketing_optin"));
+  }
+});
+
+test("email e CPF NUNCA aparecem em log de function", async () => {
+  await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_DTU,
+    player_data: okPlayer(),
+  });
+  const joined = db.logs.join("\n");
+  assert.ok(joined.length > 0, "deveria ter logado algo");
+  assert.ok(!joined.includes(VALID_EMAIL), "email apareceu no log");
+  assert.ok(!joined.includes("jogador"), "parte do email apareceu no log");
+  assert.ok(!joined.includes(VALID_CPF), "CPF com máscara apareceu no log");
+  assert.ok(!joined.includes(VALID_CPF_DIGITS), "CPF em dígitos apareceu no log");
+  assert.ok(!joined.includes("13846816197"), "user_id apareceu no log");
+  // Só os NOMES dos campos.
+  const line = db.logs.find((l) => l.includes("not_implemented"));
+  assert.deepEqual(JSON.parse(line).fields, ["user_id", "email", "cpf", "marketing_optin"]);
+});
+
+test("email e CPF não voltam ecoados na resposta de erro", async () => {
+  const { res } = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_DTU,
+    player_data: okPlayer({ user_id: "" }),
+  });
+  const raw = await res.text();
+  assert.ok(!raw.includes(VALID_EMAIL));
+  assert.ok(!raw.includes(VALID_CPF));
+  assert.ok(!raw.includes(VALID_CPF_DIGITS));
 });
 
 test("redeem recusa conteúdo que não é do lote do voucher", async () => {
   const { body } = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_OTHER_BATCH,
-    player_data: { user_id: "13846816197" },
+    player_data: okPlayer(),
   });
   assert.equal(body.status, "invalid_or_unavailable");
   assert.ok(db.logs.some((l) => l.includes("content_not_in_batch")));
+});
+
+test("redeem recusa SKU fora do forms-map mesmo com content_id certo", async () => {
+  const { res, body } = await callRedeem({
+    code: "RLBK-SKUNOVO001",
+    content_id: CONTENT_UNMAPPED,
+    player_data: okPlayer(),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(body.status, "invalid_or_unavailable");
+  assert.ok(db.logs.some((l) => l.includes("unmapped_sku")));
 });
 
 test("redeem em voucher usado/vencido devolve a genérica", async () => {
@@ -319,7 +530,7 @@ test("redeem em voucher usado/vencido devolve a genérica", async () => {
     const { body } = await callRedeem({
       code,
       content_id: CONTENT_DTU,
-      player_data: { user_id: "13846816197" },
+      player_data: okPlayer(),
     });
     assert.equal(body.status, "invalid_or_unavailable");
   }
@@ -330,13 +541,13 @@ test("redeem também é rate limited (mesmo balde do validate)", async () => {
     await callRedeem({
       code: "RLBK-VALIDO0001",
       content_id: CONTENT_DTU,
-      player_data: { user_id: "13846816197" },
+      player_data: okPlayer(),
     });
   }
   const { res } = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
-    player_data: { user_id: "13846816197" },
+    player_data: okPlayer(),
   });
   assert.equal(res.status, 429);
 });
@@ -345,18 +556,18 @@ test("redeem descarta campos extras que o cliente inventar", async () => {
   await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
-    player_data: { user_id: "13846816197", product_code: "FF-HACK", admin: true },
+    player_data: okPlayer({ product_code: "FF-HACK", admin: true, is_paid: true }),
   });
   const line = db.logs.find((l) => l.includes("not_implemented"));
   assert.ok(line);
-  assert.deepEqual(JSON.parse(line).fields, ["user_id"]);
+  assert.deepEqual(JSON.parse(line).fields, ["user_id", "email", "cpf", "marketing_optin"]);
 });
 
 test("redeem não fala com a Lapak nem escreve em pv_vouchers", async () => {
   await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
-    player_data: { user_id: "13846816197" },
+    player_data: okPlayer(),
   });
   for (const call of db.calls) {
     assert.ok(!/lapak|recargagames\.com\/api|proxy/i.test(call), `chamada suspeita: ${call}`);

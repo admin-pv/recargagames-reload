@@ -6,7 +6,8 @@
 //
 // Contrato:
 //   entrada  { code }
-//   válido   200 { valid: true, batch_name, expires_at, contents: [...] }
+//   válido   200 { valid: true, batch_name, expires_at, purpose_note,
+//                  contents: [{ id, display_label, delivery_type, fields }] }
 //   inválido 200 { valid: false, reason: "invalid_or_unavailable" }
 //   em curso 200 { valid: false, reason: "processing" }
 //   estourou 429 { error: "rate_limited", retry_after_seconds }
@@ -28,7 +29,7 @@ import {
 import { serverConfig, MisconfiguredError, UpstreamError } from "../../lib/supabase.mjs";
 import { hitRateLimit, retryAfterSeconds, MAX_ATTEMPTS } from "../../lib/rate-limit.mjs";
 import { normalizeCode, isPlausibleCode, findVoucher, evaluateVoucher } from "../../lib/vouchers.mjs";
-import { fieldsForContent } from "../../lib/forms.mjs";
+import { fieldsForContent, purposeNote } from "../../lib/forms.mjs";
 
 export const config = { path: "/api/validate" };
 
@@ -109,20 +110,41 @@ export default async (req, context) => {
     return json(200, { valid: false, reason: verdict.reason }, cors);
   }
 
-  const contents = verdict.contents.map((content) => {
+  // FAIL-CLOSED: conteúdo cujo formulário não pode ser resolvido (SKU DTU
+  // fora do forms-map) é RECUSADO, não oferecido com formulário genérico.
+  // Pedir o campo errado entrega no lugar errado, e DTU não tem reembolso.
+  // Recusa o conteúdo, não o lote: um SKU não mapeado não pode derrubar os
+  // outros conteúdos válidos do mesmo voucher.
+  const contents = [];
+  for (const content of verdict.contents) {
     const form = fieldsForContent(content);
-    if (content.delivery_type === "DTU" && !form.matched) {
-      // SKU DTU fora do forms-map: caiu no genérico. Não quebra o usuário,
-      // mas queremos saber pra mapear a categoria direito.
-      console.warn(`[validate] DTU sku unmapped, using fallback: ${content.product_code}`);
+    if (!form.ok) {
+      console.error(
+        `[validate] ${form.reason}: conteúdo recusado, sku=${content.product_code} content_id=${content.id}`
+      );
+      continue;
     }
-    return {
+    contents.push({
       id: content.id,
       display_label: content.display_label,
       delivery_type: content.delivery_type,
       fields: form.fields,
-    };
-  });
+    });
+  }
+
+  // Sobrou nada resgatável: pro usuário é indistinguível de inválido.
+  if (!contents.length) {
+    console.error(
+      `[validate] todos os conteúdos do lote foram recusados, batch_id=${verdict.batch.id} code=${label}`
+    );
+    logEvent({
+      evt: "validate",
+      result: "invalid_or_unavailable",
+      code: label,
+      cause: "all_contents_refused",
+    });
+    return json(200, GENERIC_INVALID, cors);
+  }
 
   logEvent({
     evt: "validate",
@@ -138,6 +160,9 @@ export default async (req, context) => {
       valid: true,
       batch_name: verdict.batch.name,
       expires_at: verdict.batch.expires_at,
+      // Copy da linha de finalidade vem do servidor (forms-map.json) pra
+      // não ter duas fontes de verdade com o texto legal.
+      purpose_note: purposeNote(),
       contents,
     },
     cors

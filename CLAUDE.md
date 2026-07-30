@@ -122,8 +122,15 @@ marcado com um comentário no fim do arquivo.
 - **Secrets só em env var do Netlify.** `SUPABASE_SECRET_KEY` e `IP_HASH_SALT`.
   Nada de chave do Supabase no front, nem a publishable — o front não fala com
   o banco.
+- **SKU DTU sem categoria no `forms-map.json` é RECUSADO**
+  (`fallback_category: null`). Nunca oferecer formulário genérico de DTU:
+  campo errado = entrega no ID errado = prejuízo sem reembolso. Recusar o
+  conteúdo, não o lote. Mapear categoria nova é editar `forms-map.json`.
 - **Não logar código completo.** `codeLabel()` (4 chars + HMAC) é o único jeito
   de um código aparecer em log.
+- **Não logar dado pessoal.** Email, CPF e `user_id` nunca vão pra log — nem em
+  debug temporário. No máximo os nomes dos campos (`Object.keys(clean)`).
+  `player_data` saneado vive só em memória, dentro da request.
 - **IP cru não é persistido.** Só `HMAC(salt, ip)`.
 - **CORS restrito** ao próprio domínio + URLs de deploy do site.
 - Mudança em RLS, em rate limit ou na uniformidade das mensagens = **modo
@@ -133,8 +140,12 @@ marcado com um comentário no fim do arquivo.
 
 ## 7. Modos de entrega
 
-**Modo MVP (rápido):** copy, estilo, ajuste de layout, novo campo no
-`forms-map.json`, mensagem de erro do front.
+**Modo MVP (rápido):** copy, estilo, ajuste de layout, mapear categoria nova
+no `forms-map.json`, mensagem de erro do front.
+
+Atenção: **campo novo em `common_fields` não é MVP** — é coleta de dado
+pessoal. Passa por modo cuidado (finalidade, consentimento, o que vai pro log
+e o que o Brief 3 persiste).
 
 **Modo cuidado (devagar e checado):** qualquer coisa que toque em
 `/api/validate`, `/api/redeem`, rate limit, RLS, CORS, tratamento de código,

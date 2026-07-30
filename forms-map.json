@@ -1,9 +1,40 @@
 {
-  "_comment_1": "MAPA ESTÁTICO de formulários por categoria de SKU — Brief 2. Fica no SERVIDOR (importado pelas Netlify Functions); o front nunca lê este arquivo direto, ele recebe só os campos já resolvidos pelo /api/validate.",
-  "_comment_2": "MELHORIA JÁ REGISTRADA (futuro): este mapa passa a ser alimentado pelo campo `forms` do Get Categories da Lapak, via proxy (api.recargagames.com) com cache. Enquanto o proxy não estiver acessível a este app, o mapa é estático e versionado aqui.",
-  "_comment_3": "delivery_type='PIN' NÃO usa este mapa: PIN não tem input (o código sai pra nós e é exibido ao usuário). Só DTU resolve campos aqui.",
-  "version": 1,
+  "_comment_1": "MAPA ESTÁTICO de formulários — Brief 2. Fica no SERVIDOR (importado pelas Netlify Functions); o front nunca lê este arquivo direto, ele recebe só os campos já resolvidos pelo /api/validate.",
+  "_comment_2": "MELHORIA JÁ REGISTRADA (futuro): as categories passam a ser alimentadas pelo campo `forms` do Get Categories da Lapak, via proxy com cache. Os common_fields são nossos e continuam aqui.",
+  "version": 2,
 
+  "_comment_3": "common_fields: pedidos em TODO resgate, DTU e PIN igual — são dados nossos (contato/antifraude), não da entrega. Ordem de renderização = ordem desta lista, com os checkboxes sempre no fim (ver forms.mjs).",
+  "common_fields": [
+    {
+      "field": "email",
+      "label": "Email",
+      "type": "email",
+      "required": true,
+      "placeholder": "voce@email.com",
+      "help": "Usamos para falar com você sobre este resgate.",
+      "max_length": 254
+    },
+    {
+      "field": "cpf",
+      "label": "CPF (opcional)",
+      "type": "cpf",
+      "required": false,
+      "placeholder": "000.000.000-00",
+      "help": "Ajuda a liberar o resgate mais rápido se cair em revisão."
+    },
+    {
+      "field": "marketing_optin",
+      "label": "Aceito receber novidades e ofertas da Recarga Games por email.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    }
+  ],
+
+  "_comment_4": "purpose_note: linha de finalidade exibida abaixo dos campos de dado pessoal. Texto no servidor (não hardcoded no front) pra ter uma única fonte de verdade.",
+  "purpose_note": "Seus dados são usados para validação do resgate e prevenção a fraude.",
+
+  "_comment_5": "categories: campos de ENTREGA, por categoria de SKU. delivery_type='PIN' não usa nada daqui (o código sai pra nós e é exibido).",
   "categories": {
     "free_fire": {
       "label": "Free Fire",
@@ -19,26 +50,10 @@
           "max_length": 15
         }
       ]
-    },
-
-    "generic_dtu": {
-      "label": "Recarga direta",
-      "fields": [
-        {
-          "field": "user_id",
-          "label": "ID do jogador",
-          "type": "number",
-          "required": true,
-          "placeholder": "somente números",
-          "help": "ID numérico da conta que vai receber a recarga.",
-          "min_length": 4,
-          "max_length": 20
-        }
-      ]
     }
   },
 
-  "_comment_4": "sku_category_patterns: pv_batch_contents não tem coluna de categoria, só product_code (SKU Lapak, ex: FF100_10-S116-br). A categoria é derivada por regex no SKU, na ordem desta lista — primeiro match ganha. Regex é aplicada com flag 'i'.",
+  "_comment_6": "sku_category_patterns: pv_batch_contents não tem coluna de categoria, só product_code (SKU Lapak, ex: FF100_10-S116-br). A categoria é derivada por regex no SKU, na ordem desta lista — primeiro match ganha. Regex aplicada com flag 'i'.",
   "sku_category_patterns": [
     {
       "pattern": "^FF",
@@ -47,6 +62,6 @@
     }
   ],
 
-  "_comment_5": "fallback_category: SKU DTU que não casa com nenhum pattern acima cai aqui, e a function loga um aviso com o SKU pra a gente mapear direito. Nunca deixa o usuário na mão, mas também não finge saber o campo certo. Pôr null aqui faz o conteúdo não-mapeado ser recusado em vez de cair no genérico.",
-  "fallback_category": "generic_dtu"
+  "_comment_7": "fallback_category = null é FAIL-CLOSED e é a decisão: SKU DTU que não casa com nenhum pattern acima é RECUSADO (não aparece na lista de conteúdos, e resgatá-lo direto devolve a mensagem genérica). Nunca cai em formulário genérico — pedir o campo errado entrega no lugar errado, e DTU não tem reembolso. A function loga o SKU com console.error pra a gente mapear. Pôr uma string aqui reabre o comportamento de fallback.",
+  "fallback_category": null
 }

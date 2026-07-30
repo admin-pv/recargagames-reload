@@ -100,7 +100,21 @@
     </div>
 
     <form id="form-redeem" novalidate>
+      <!-- Contexto da entrega (só PIN). Vem antes dos campos: primeiro o
+           que você recebe, depois o que a gente precisa de você. -->
+      <div class="info-block" id="pin-info" hidden>
+        <p class="muted">Este conteúdo é entregue como <b>código PIN</b>. O código aparece na tela ao final do resgate.</p>
+      </div>
+
+      <!-- Campos de dado (entrega + contato). Preenchido pelo app.js. -->
       <div id="fields"></div>
+
+      <!-- Finalidade do tratamento, logo abaixo dos campos de dado pessoal
+           e antes do consentimento de marketing, que é separado. -->
+      <p class="purpose-note" id="purpose-note" hidden></p>
+
+      <!-- Checkboxes de consentimento (optin de marketing). -->
+      <div id="fields-consent"></div>
 
       <!-- Aviso obrigatório do fluxo DTU (Check ID OFF na Lapak). -->
       <div class="notice" id="dtu-notice" hidden>
@@ -116,10 +130,6 @@
         <input type="checkbox" id="dtu-confirm">
         <span>Confiro que os dados acima estão corretos e entendo que a entrega é definitiva.</span>
       </label>
-
-      <div class="info-block" id="pin-info" hidden>
-        <p class="muted">Este conteúdo é entregue como <b>código PIN</b>. Não precisamos de nenhum dado seu: o código aparece na tela ao final do resgate.</p>
-      </div>
 
       <div class="actions">
         <button type="submit" class="btn btn-primary btn-block" id="btn-redeem">Confirmar resgate</button>

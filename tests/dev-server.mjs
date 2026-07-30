@@ -44,6 +44,15 @@ const contents = () => [
   },
 ];
 
+// SKU DTU de jogo que ainda não está no forms-map.json — deve ser RECUSADO
+// (não aparece na lista), nunca cair em formulário genérico.
+const unmappedContent = () => ({
+  id: "44444444-4444-4444-8444-444444444444",
+  display_label: "50 Diamantes Mobile Legends",
+  delivery_type: "DTU",
+  product_code: "MLBB50-S9-br",
+});
+
 const batch = (over = {}) => ({
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   name: "Lote Piloto Reload Bak",
@@ -68,6 +77,16 @@ export const TEST_CODES = {
     id: "v7",
     status: "EMITIDO",
     batch: batch({ contents: [contents()[1]] }),
+  },
+  "RLBK-SKUNOVO001": {
+    id: "v8",
+    status: "EMITIDO",
+    batch: batch({ contents: [contents()[0], unmappedContent()] }),
+  },
+  "RLBK-SOSKUNOVO1": {
+    id: "v9",
+    status: "EMITIDO",
+    batch: batch({ contents: [unmappedContent()] }),
   },
 };
 
