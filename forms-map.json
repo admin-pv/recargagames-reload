@@ -1,0 +1,67 @@
+{
+  "_comment_1": "MAPA ESTÁTICO de formulários — Brief 2. Fica no SERVIDOR (importado pelas Netlify Functions); o front nunca lê este arquivo direto, ele recebe só os campos já resolvidos pelo /api/validate.",
+  "_comment_2": "MELHORIA JÁ REGISTRADA (futuro): as categories passam a ser alimentadas pelo campo `forms` do Get Categories da Lapak, via proxy com cache. Os common_fields são nossos e continuam aqui.",
+  "version": 2,
+
+  "_comment_3": "common_fields: pedidos em TODO resgate, DTU e PIN igual — são dados nossos (contato/antifraude), não da entrega. Ordem de renderização = ordem desta lista, com os checkboxes sempre no fim (ver forms.mjs).",
+  "common_fields": [
+    {
+      "field": "email",
+      "label": "Email",
+      "type": "email",
+      "required": true,
+      "placeholder": "voce@email.com",
+      "help": "Usamos para falar com você sobre este resgate.",
+      "max_length": 254
+    },
+    {
+      "field": "cpf",
+      "label": "CPF (opcional)",
+      "type": "cpf",
+      "required": false,
+      "placeholder": "000.000.000-00",
+      "help": "Ajuda a liberar o resgate mais rápido se cair em revisão."
+    },
+    {
+      "field": "marketing_optin",
+      "label": "Aceito receber novidades e ofertas da Recarga Games por email.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    }
+  ],
+
+  "_comment_4": "purpose_note: linha de finalidade exibida abaixo dos campos de dado pessoal. Texto no servidor (não hardcoded no front) pra ter uma única fonte de verdade.",
+  "purpose_note": "Seus dados são usados para validação do resgate e prevenção a fraude.",
+
+  "_comment_5": "categories: campos de ENTREGA, por categoria de SKU. delivery_type='PIN' não usa nada daqui (o código sai pra nós e é exibido).",
+  "categories": {
+    "free_fire": {
+      "label": "Free Fire",
+      "fields": [
+        {
+          "field": "user_id",
+          "label": "ID do jogador",
+          "type": "number",
+          "required": true,
+          "placeholder": "somente números",
+          "help": "Abra o Free Fire, toque no avatar e copie o ID numérico do perfil.",
+          "min_length": 6,
+          "max_length": 15
+        }
+      ]
+    }
+  },
+
+  "_comment_6": "sku_category_patterns: pv_batch_contents não tem coluna de categoria, só product_code (SKU Lapak, ex: FF100_10-S116-br). A categoria é derivada por regex no SKU, na ordem desta lista — primeiro match ganha. Regex aplicada com flag 'i'.",
+  "sku_category_patterns": [
+    {
+      "pattern": "^FF",
+      "category": "free_fire",
+      "note": "SKUs de Free Fire do piloto: FF100_10-S116-br, FFBV100-S22-br etc."
+    }
+  ],
+
+  "_comment_7": "fallback_category = null é FAIL-CLOSED e é a decisão: SKU DTU que não casa com nenhum pattern acima é RECUSADO (não aparece na lista de conteúdos, e resgatá-lo direto devolve a mensagem genérica). Nunca cai em formulário genérico — pedir o campo errado entrega no lugar errado, e DTU não tem reembolso. A function loga o SKU com console.error pra a gente mapear. Pôr uma string aqui reabre o comportamento de fallback.",
+  "fallback_category": null
+}

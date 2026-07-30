@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Resgate o seu Voucher de Parceiro Recarga Games.">
+<title>Resgate seu Voucher de Parceiro — Recarga Games</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700;800;900&family=Tomorrow:wght@700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div class="atmosphere" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-text">
+      Recarga Games
+      <small>Voucher de Parceiro</small>
+    </span>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <ol class="steps" id="steps" aria-label="Progresso do resgate">
+    <li data-n="1" data-state="current" data-step="code">Código</li>
+    <li data-n="2" data-state="todo" data-step="contents">Conteúdo</li>
+    <li data-n="3" data-state="todo" data-step="form">Confirmação</li>
+  </ol>
+
+  <!-- ============ TELA 1 — inserir código ============ -->
+  <section id="screen-code" aria-labelledby="title-code">
+    <p class="eyebrow">Voucher de Parceiro</p>
+    <h1 id="title-code">Resgate seu <span class="grad-text">prêmio</span></h1>
+    <p class="lede">Digite o código do seu voucher para ver o que você pode resgatar.</p>
+
+    <form id="form-code" novalidate>
+      <div class="field">
+        <label for="code">Código do voucher</label>
+        <input
+          id="code"
+          name="code"
+          class="input code-input"
+          type="text"
+          inputmode="latin"
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck="false"
+          maxlength="32"
+          placeholder="XXXX-XXXXXXXXXX"
+          aria-describedby="code-help"
+          required>
+        <p class="field-help" id="code-help">Do jeito que está no seu voucher, com ou sem o traço.</p>
+        <p class="field-error" id="code-error" hidden></p>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary btn-block" id="btn-validate">Validar código</button>
+      </div>
+    </form>
+
+    <div class="alert" id="alert-code" role="alert" aria-live="polite"></div>
+  </section>
+
+  <!-- ============ TELA 2 — conteúdos do lote ============ -->
+  <section id="screen-contents" aria-labelledby="title-contents" hidden>
+    <div class="batch-strip">
+      <span><b id="batch-name"></b></span>
+      <span>Válido até <b id="batch-expires"></b></span>
+    </div>
+
+    <h2 id="title-contents">Escolha seu <span class="grad-text">conteúdo</span></h2>
+    <p class="lede">Você pode resgatar <b>um</b> item deste voucher. A escolha é definitiva.</p>
+
+    <div class="card-list" id="contents-list" role="group" aria-label="Conteúdos disponíveis"></div>
+
+    <div class="actions">
+      <button type="button" class="btn btn-primary btn-block" id="btn-continue" disabled>Continuar</button>
+      <button type="button" class="btn btn-ghost" data-back="code">← Usar outro código</button>
+    </div>
+  </section>
+
+  <!-- ============ TELA 3 — formulário dinâmico ============ -->
+  <section id="screen-form" aria-labelledby="title-form" hidden>
+    <h2 id="title-form">Confirme os <span class="grad-text">dados</span></h2>
+
+    <div class="summary">
+      <span class="card-icon" aria-hidden="true" id="summary-icon">🎁</span>
+      <div class="card-body">
+        <div class="card-title" id="summary-title"></div>
+        <span class="badge" id="summary-badge"></span>
+      </div>
+    </div>
+
+    <form id="form-redeem" novalidate>
+      <!-- Contexto da entrega (só PIN). Vem antes dos campos: primeiro o
+           que você recebe, depois o que a gente precisa de você. -->
+      <div class="info-block" id="pin-info" hidden>
+        <p class="muted">Este conteúdo é entregue como <b>código PIN</b>. O código aparece na tela ao final do resgate.</p>
+      </div>
+
+      <!-- Campos de dado (entrega + contato). Preenchido pelo app.js. -->
+      <div id="fields"></div>
+
+      <!-- Finalidade do tratamento, logo abaixo dos campos de dado pessoal
+           e antes do consentimento de marketing, que é separado. -->
+      <p class="purpose-note" id="purpose-note" hidden></p>
+
+      <!-- Checkboxes de consentimento (optin de marketing). -->
+      <div id="fields-consent"></div>
+
+      <!-- Aviso obrigatório do fluxo DTU (Check ID OFF na Lapak). -->
+      <div class="notice" id="dtu-notice" hidden>
+        <p class="notice-title">⚠ Entrega direta e definitiva</p>
+        <ul>
+          <li>A recarga é entregue <b>diretamente no ID que você informar</b>, sem etapa de conferência.</li>
+          <li><b>Confira o ID antes de confirmar</b> — a conferência é responsabilidade sua.</li>
+          <li>Depois da entrega <b>não há reembolso, troca ou reversão</b>, mesmo se o ID estiver errado.</li>
+        </ul>
+      </div>
+
+      <label class="check" id="dtu-confirm-wrap" hidden>
+        <input type="checkbox" id="dtu-confirm">
+        <span>Confiro que os dados acima estão corretos e entendo que a entrega é definitiva.</span>
+      </label>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary btn-block" id="btn-redeem">Confirmar resgate</button>
+        <button type="button" class="btn btn-ghost" data-back="contents">← Escolher outro conteúdo</button>
+      </div>
+    </form>
+
+    <div class="alert" id="alert-form" role="alert" aria-live="polite"></div>
+  </section>
+
+  <!-- ============ TELA 4 — resultado ============ -->
+  <section id="screen-result" class="result" aria-labelledby="title-result" hidden>
+    <div class="result-icon" id="result-icon" aria-hidden="true">🛠</div>
+    <h2 id="title-result"></h2>
+    <p class="lede" id="result-message"></p>
+    <div class="info-block" id="result-detail" hidden>
+      <p class="muted" id="result-detail-text"></p>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn btn-outline btn-block" id="btn-restart">Voltar ao início</button>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  Recarga Games · Voucher de Parceiro — resgate único por código.
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
