@@ -1,0 +1,52 @@
+{
+  "_comment_1": "MAPA ESTÁTICO de formulários por categoria de SKU — Brief 2. Fica no SERVIDOR (importado pelas Netlify Functions); o front nunca lê este arquivo direto, ele recebe só os campos já resolvidos pelo /api/validate.",
+  "_comment_2": "MELHORIA JÁ REGISTRADA (futuro): este mapa passa a ser alimentado pelo campo `forms` do Get Categories da Lapak, via proxy (api.recargagames.com) com cache. Enquanto o proxy não estiver acessível a este app, o mapa é estático e versionado aqui.",
+  "_comment_3": "delivery_type='PIN' NÃO usa este mapa: PIN não tem input (o código sai pra nós e é exibido ao usuário). Só DTU resolve campos aqui.",
+  "version": 1,
+
+  "categories": {
+    "free_fire": {
+      "label": "Free Fire",
+      "fields": [
+        {
+          "field": "user_id",
+          "label": "ID do jogador",
+          "type": "number",
+          "required": true,
+          "placeholder": "somente números",
+          "help": "Abra o Free Fire, toque no avatar e copie o ID numérico do perfil.",
+          "min_length": 6,
+          "max_length": 15
+        }
+      ]
+    },
+
+    "generic_dtu": {
+      "label": "Recarga direta",
+      "fields": [
+        {
+          "field": "user_id",
+          "label": "ID do jogador",
+          "type": "number",
+          "required": true,
+          "placeholder": "somente números",
+          "help": "ID numérico da conta que vai receber a recarga.",
+          "min_length": 4,
+          "max_length": 20
+        }
+      ]
+    }
+  },
+
+  "_comment_4": "sku_category_patterns: pv_batch_contents não tem coluna de categoria, só product_code (SKU Lapak, ex: FF100_10-S116-br). A categoria é derivada por regex no SKU, na ordem desta lista — primeiro match ganha. Regex é aplicada com flag 'i'.",
+  "sku_category_patterns": [
+    {
+      "pattern": "^FF",
+      "category": "free_fire",
+      "note": "SKUs de Free Fire do piloto: FF100_10-S116-br, FFBV100-S22-br etc."
+    }
+  ],
+
+  "_comment_5": "fallback_category: SKU DTU que não casa com nenhum pattern acima cai aqui, e a function loga um aviso com o SKU pra a gente mapear direito. Nunca deixa o usuário na mão, mas também não finge saber o campo certo. Pôr null aqui faz o conteúdo não-mapeado ser recusado em vez de cair no genérico.",
+  "fallback_category": "generic_dtu"
+}

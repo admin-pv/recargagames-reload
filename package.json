@@ -1,0 +1,16 @@
+{
+  "name": "recargagames-reload",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App público de resgate do Voucher de Parceiro (reload.recargagames.com)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/",
+    "check:secrets": "bash tests/check-secrets.sh",
+    "check": "npm test && npm run check:secrets",
+    "dev": "python3 -m http.server 8000 --directory public"
+  },
+  "engines": {
+    "node": ">=20.10"
+  }
+}
