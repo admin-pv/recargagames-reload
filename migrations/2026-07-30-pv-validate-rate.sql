@@ -106,14 +106,17 @@ GRANT EXECUTE ON FUNCTION public.pv_validate_rate_hit(text, timestamptz) TO serv
 -- BYPASSA RLS. Para provar a trava é preciso virar 'anon' dentro de uma
 -- transação (SET LOCAL ROLE) e dar ROLLBACK. Mesmo procedimento do Brief 1.
 --
--- Teste 1 — SELECT como anon deve retornar 0 (deny = vazio, não erro):
+-- Rodar UM BLOCO POR VEZ. Nos blocos 1 a 3 o ERRO é o resultado esperado.
+--
+-- Teste 1 — SELECT como anon:
 --     BEGIN;
 --       SET LOCAL ROLE anon;
 --       SELECT count(*) AS deve_ser_zero FROM public.pv_validate_rate;
 --     ROLLBACK;
---     -- esperado: deve_ser_zero = 0
---     -- (se estourar 42501 'permission denied for table', melhor ainda:
---     --  o REVOKE de privilégio pegou antes da RLS)
+--     -- esperado: ERROR 42501 'permission denied for table' — o REVOKE de
+--     --  privilégio barra antes mesmo da RLS.
+--     -- (se vier deve_ser_zero = 0 em vez do erro, também passa: aí quem
+--     --  barrou foi a RLS)
 --
 -- Teste 2 — INSERT como anon deve estourar 42501:
 --     BEGIN;
@@ -130,10 +133,18 @@ GRANT EXECUTE ON FUNCTION public.pv_validate_rate_hit(text, timestamptz) TO serv
 --     ROLLBACK;
 --     -- esperado: ERROR 42501 permission denied for function
 --
--- Teste 4 — sanidade do incremento (como postgres, e limpa depois):
---     SELECT public.pv_validate_rate_hit('smoke-test', date_trunc('hour', now()));  -- 1
---     SELECT public.pv_validate_rate_hit('smoke-test', date_trunc('hour', now()));  -- 2
+-- Teste 4 — sanidade do incremento atômico (como postgres, sem erro).
+--     O SQL Editor mostra só o resultado da ÚLTIMA instrução, por isso o
+--     SELECT final: é ele que prova o contador, não as chamadas em si.
+--     SELECT public.pv_validate_rate_hit('smoke-test', date_trunc('hour', now()));
+--     SELECT public.pv_validate_rate_hit('smoke-test', date_trunc('hour', now()));
+--     SELECT ip_hash, attempts FROM public.pv_validate_rate WHERE ip_hash = 'smoke-test';
+--     -- esperado: uma linha com attempts = 2.
+--     -- Se vier 1, o ON CONFLICT não está somando e o rate limit NÃO segura.
+--
+-- Teste 5 — limpeza do teste 4:
 --     DELETE FROM public.pv_validate_rate WHERE ip_hash = 'smoke-test';
+--     -- esperado: DELETE 1
 -- =====================================================================
 
 
