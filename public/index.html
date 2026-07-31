@@ -140,15 +140,46 @@
     <div class="alert" id="alert-form" role="alert" aria-live="polite"></div>
   </section>
 
-  <!-- ============ TELA 4 — resultado ============ -->
+  <!-- ============ TELA 4 — entrega em andamento ============
+       O resgate já foi disparado e o voucher já está travado. Esta tela
+       existe porque o PIN só aparece no order_status da Lapak: o app
+       pergunta de 3 em 3 segundos até o desfecho. Sem botão de repetir —
+       um segundo disparo seria uma segunda cobrança. -->
+  <section id="screen-processing" class="result" aria-labelledby="title-processing" hidden>
+    <div class="result-icon" aria-hidden="true"><span class="spinner spinner-lg"></span></div>
+    <h2 id="title-processing">Entregando seu <span class="grad-text">prêmio</span></h2>
+    <p class="lede" id="processing-message" role="status" aria-live="polite">
+      Estamos processando seu resgate com o fornecedor. Isso costuma levar alguns segundos.
+    </p>
+    <div class="info-block">
+      <p class="muted"><b>Não feche esta tela.</b> Seu voucher já foi reservado — o resultado aparece aqui assim que o fornecedor confirmar.</p>
+    </div>
+  </section>
+
+  <!-- ============ TELA 5 — resultado ============ -->
   <section id="screen-result" class="result" aria-labelledby="title-result" hidden>
     <div class="result-icon" id="result-icon" aria-hidden="true">🛠</div>
     <h2 id="title-result"></h2>
     <p class="lede" id="result-message"></p>
+
+    <!-- Caixa do PIN. Só aparece em entrega por código; o valor é escrito
+         com textContent pelo app.js e não passa por innerHTML. -->
+    <div class="pin-box" id="result-pin" hidden>
+      <p class="pin-label">Seu código PIN</p>
+      <div class="pin-row">
+        <code class="pin-value" id="pin-value"></code>
+        <button type="button" class="btn btn-copy" id="btn-copy-pin" aria-describedby="pin-copied">Copiar</button>
+      </div>
+      <p class="pin-serial" id="pin-serial" hidden></p>
+      <p class="pin-copied" id="pin-copied" role="status" aria-live="polite"></p>
+      <p class="muted pin-warning"><b>Anote agora.</b> Resgate este código no jogo — ele fica disponível nesta tela por 24 horas.</p>
+    </div>
+
     <div class="info-block" id="result-detail" hidden>
       <p class="muted" id="result-detail-text"></p>
     </div>
     <div class="actions">
+      <button type="button" class="btn btn-primary btn-block" id="btn-retry-content" hidden>Escolher outro conteúdo</button>
       <button type="button" class="btn btn-outline btn-block" id="btn-restart">Voltar ao início</button>
     </div>
   </section>

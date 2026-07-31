@@ -7,15 +7,34 @@
    - O código do voucher vive SÓ em memória. Nunca vai pra URL, nunca vai
      pra localStorage/sessionStorage — link compartilhado ou histórico do
      navegador não pode carregar voucher.
+   - O attempt_ref carrega o código dentro dele (<code>-a<n>): vale a mesma
+     regra, memória e nada mais.
+   - O PIN vive na tela e no clipboard, se o usuário copiar. Não é salvo
+     em lugar nenhum — nem aqui, nem no nosso banco.
    - Nada de innerHTML com dado vindo do servidor: sempre textContent.
    - Validação daqui é conveniência de UX. A que conta é a da function.
+   - NUNCA reenviar /api/redeem automaticamente. O create da Lapak não tem
+     idempotência: um segundo envio é uma segunda cobrança.
    ===================================================================== */
 
 (() => {
   "use strict";
 
-  const SCREENS = ["code", "contents", "form", "result"];
-  const STEP_OF_SCREEN = { code: "code", contents: "contents", form: "form", result: null };
+  const SCREENS = ["code", "contents", "form", "processing", "result"];
+  const STEP_OF_SCREEN = {
+    code: "code",
+    contents: "contents",
+    form: "form",
+    processing: null,
+    result: null,
+  };
+
+  // Polling do desfecho: de 3 em 3 segundos, por até 5 minutos de tela.
+  // Depois disso a reconciliação do servidor assume — o resgate não
+  // depende desta aba ficar aberta.
+  const POLL_INTERVAL_MS = 3000;
+  const POLL_BACKOFF_MS = 15000; // quando o servidor pede calma (429)
+  const POLL_MAX_MS = 5 * 60 * 1000;
 
   const MSG = {
     invalid:
@@ -39,6 +58,9 @@
     contents: [],
     selectedId: null,
     busy: false,
+    attemptRef: null,
+    pollTimer: null,
+    pollUntil: 0,
   };
 
   // Espelhos da validação do servidor (lib/forms.mjs). Se mudar lá, mudar aqui.
@@ -90,11 +112,18 @@
     pinInfo: el("pin-info"),
     btnRedeem: el("btn-redeem"),
     alertForm: el("alert-form"),
+    processingMessage: el("processing-message"),
     resultIcon: el("result-icon"),
     resultTitle: el("title-result"),
     resultMessage: el("result-message"),
     resultDetail: el("result-detail"),
     resultDetailText: el("result-detail-text"),
+    resultPin: el("result-pin"),
+    pinValue: el("pin-value"),
+    pinSerial: el("pin-serial"),
+    pinCopied: el("pin-copied"),
+    btnCopyPin: el("btn-copy-pin"),
+    btnRetryContent: el("btn-retry-content"),
     btnRestart: el("btn-restart"),
   };
 
@@ -107,7 +136,7 @@
     const currentStep = STEP_OF_SCREEN[name];
     for (const li of refs.steps.children) {
       const step = li.dataset.step;
-      if (name === "result") li.dataset.state = "done";
+      if (!currentStep) li.dataset.state = "done";
       else if (step === currentStep) li.dataset.state = "current";
       else li.dataset.state = order.indexOf(step) < order.indexOf(currentStep) ? "done" : "todo";
     }
@@ -571,15 +600,115 @@
       return;
     }
 
+    // Resgate aceito: o voucher já está travado e a order já foi pedida.
+    // A partir daqui só se ACOMPANHA — nunca se reenvia.
+    if (data.status === "processing" && data.attempt_ref) {
+      state.attemptRef = data.attempt_ref;
+      showScreen("processing");
+      startPolling();
+      return;
+    }
+
     showResult(data.status, data.message);
   });
 
-  /* ---------------------- TELA 4 — resultado ------------------------ */
+  /* ------------- TELA 4 — acompanhamento do desfecho ---------------- */
 
-  function showResult(status, serverMessage) {
+  function stopPolling() {
+    if (state.pollTimer) clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+
+  function startPolling() {
+    stopPolling();
+    state.pollUntil = Date.now() + POLL_MAX_MS;
+    state.pollTimer = setTimeout(pollOnce, POLL_INTERVAL_MS);
+  }
+
+  function scheduleNextPoll(delay) {
+    if (Date.now() >= state.pollUntil) {
+      stopPolling();
+      showResult("timeout");
+      return;
+    }
+    state.pollTimer = setTimeout(pollOnce, delay);
+  }
+
+  async function pollOnce() {
+    if (!state.code || !state.attemptRef) return;
+
+    const result = await api("/api/status", {
+      code: state.code,
+      attempt_ref: state.attemptRef,
+    });
+
+    // Rede instável ou erro do servidor não encerram nada: a order existe
+    // do lado de lá e o desfecho continua valendo. Tenta de novo.
+    if (result.kind === "network" || result.kind === "server") {
+      return scheduleNextPoll(POLL_INTERVAL_MS);
+    }
+    if (result.kind === "rate_limited") {
+      return scheduleNextPoll(POLL_BACKOFF_MS);
+    }
+
+    const data = result.data;
+
+    if (data.status === "success") {
+      stopPolling();
+      return showResult("success", data.message, data);
+    }
+    if (data.status === "failed" || data.status === "invalid_or_unavailable") {
+      stopPolling();
+      return showResult(data.status, data.message);
+    }
+
+    scheduleNextPoll(POLL_INTERVAL_MS);
+  }
+
+  /* ---------------------- TELA 5 — resultado ------------------------ */
+
+  function showResult(status, serverMessage, data) {
+    const payload = data || {};
+    const isPin = payload.delivery_type === "PIN";
+
     const views = {
-      // Brief 2: o resgate é stub. Vira tela de sucesso/PIN no Brief 3.
-      not_implemented: {
+      success: {
+        icon: "🎉",
+        tone: "ok",
+        title: "Resgate concluído",
+        message: !isPin
+          ? "Pronto! O conteúdo foi entregue direto na conta do ID que você informou."
+          : payload.pin
+            ? "Seu código PIN está aqui embaixo. Use-o no jogo para receber o conteúdo."
+            : "O resgate foi concluído.",
+        detail: isPin
+          ? null
+          : "A entrega pode levar alguns minutos para aparecer no jogo. Se não aparecer, fale com o suporte com este voucher em mãos.",
+      },
+      // Falha depois do disparo: o servidor já devolveu o voucher, então
+      // dá pra escolher outro conteúdo sem sair da sessão.
+      failed: {
+        icon: "⚠",
+        tone: "warn",
+        // A mensagem do servidor já diz que o código continua válido; um
+        // detail repetindo isso só empurra os botões pra baixo.
+        title: "Não deu pra concluir",
+        message: serverMessage || MSG.server,
+        detail: null,
+        retry: true,
+      },
+      // Teto de 5 min da tela. O resgate NÃO foi cancelado: a
+      // reconciliação do servidor fecha sozinha em até 20 minutos.
+      timeout: {
+        icon: "⏳",
+        tone: "info",
+        title: "Ainda processando",
+        message:
+          "O fornecedor está demorando mais que o normal. Seu resgate continua em andamento — não é preciso fazer nada.",
+        detail:
+          "Consulte seu código mais tarde nesta mesma tela para ver o resultado. Não tente resgatar de novo agora.",
+      },
+      maintenance: {
         icon: "🛠",
         tone: "info",
         title: "Resgate em manutenção",
@@ -617,11 +746,59 @@
     refs.resultIcon.dataset.tone = view.tone;
     refs.resultTitle.textContent = view.title;
     refs.resultMessage.textContent = view.message;
-    refs.resultDetail.hidden = !view.detail;
-    if (view.detail) refs.resultDetailText.textContent = view.detail;
 
+    // Sucesso sem PIN na tela (expirado ou não recuperável) traz a
+    // explicação do servidor no lugar do detalhe padrão.
+    const detail = status === "success" && payload.message ? payload.message : view.detail;
+    refs.resultDetail.hidden = !detail;
+    if (detail) refs.resultDetailText.textContent = detail;
+
+    // "Escolher outro conteúdo" só em falha, e só se ainda houver lista.
+    refs.btnRetryContent.hidden = !(view.retry && state.contents.length > 0);
+
+    showPin(payload.pin, payload.serial);
     showScreen("result");
   }
+
+  function showPin(pin, serial) {
+    refs.pinCopied.textContent = "";
+    if (!pin) {
+      refs.resultPin.hidden = true;
+      refs.pinValue.textContent = "";
+      refs.pinSerial.hidden = true;
+      return;
+    }
+    refs.pinValue.textContent = pin;
+    refs.pinSerial.hidden = !serial;
+    if (serial) refs.pinSerial.textContent = `Serial: ${serial}`;
+    refs.resultPin.hidden = false;
+  }
+
+  refs.btnCopyPin.addEventListener("click", async () => {
+    const pin = refs.pinValue.textContent;
+    if (!pin) return;
+    try {
+      await navigator.clipboard.writeText(pin);
+      refs.pinCopied.textContent = "Código copiado.";
+    } catch {
+      // Clipboard bloqueado (permissão, contexto inseguro): seleciona o
+      // texto pro usuário copiar à mão em vez de deixar sem saída.
+      const range = document.createRange();
+      range.selectNodeContents(refs.pinValue);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      refs.pinCopied.textContent = "Selecione e copie o código acima.";
+    }
+  });
+
+  refs.btnRetryContent.addEventListener("click", () => {
+    state.attemptRef = null;
+    state.selectedId = null;
+    showPin(null);
+    renderContents();
+    showScreen("contents");
+  });
 
   /* ----------------------------- voltar ----------------------------- */
 
@@ -633,12 +810,15 @@
   }
 
   refs.btnRestart.addEventListener("click", () => {
+    stopPolling();
     state.code = null;
     state.batchName = null;
     state.expiresAt = null;
     state.purposeNote = null;
     state.contents = [];
     state.selectedId = null;
+    state.attemptRef = null;
+    showPin(null);
     refs.code.value = "";
     refs.formRedeem.reset();
     hideAlert(refs.alertCode);

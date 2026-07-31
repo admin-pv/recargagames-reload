@@ -1,29 +1,40 @@
-// POST /api/redeem — STUB DO BRIEF 2.
+// POST /api/redeem — o resgate de verdade (Brief 3).
 //
 // ============================ LEIA ANTES DE MEXER =====================
-// Este endpoint NÃO resgata nada. Ele valida o payload de ponta a ponta
-// (código, conteúdo pertencente ao lote, campos do formulário) e responde
-// { status: "not_implemented" }.
+// Este endpoint GASTA DINHEIRO. A ordem dos passos abaixo não é estética:
 //
-// O que ele deliberadamente NÃO faz — e não deve fazer até o Brief 3:
-//   - chamar a Lapak (nem em modo de teste). A chave admin do proxy não
-//     existe neste repo — nem o nome dela, e tests/check-secrets.sh reprova
-//     o build se alguém a introduzir.
-//   - flipar status de voucher (EMITIDO → PROCESSING). É só leitura.
-//   - inserir em pv_redeem_attempts.
-//   - polling, webhook, parsing de PIN.
+//   1. rate limit          nada acontece sem passar por aqui
+//   2. validação de payload + trava SKU × delivery_type
+//   3. CLAIM ATÔMICO       EMITIDO → PROCESSING (única barreira antidupla)
+//   4. attempt no banco    ANTES da Lapak, pra order nenhuma nascer órfã
+//   5. create na Lapak     UMA vez. Sem retry. Nunca.
+//   6. tid + custo         gravados assim que o create responde
+//   7. resposta            { status: "processing", attempt_ref }
 //
-// Por que validar tudo se não resgata: o contrato de entrada fica travado e
-// testado agora, então o Brief 3 troca só o miolo (o bloco final) sem mexer
-// no front nem no formato do payload.
+// O desfecho NÃO é esperado nesta request: PIN só existe no order_status
+// (A0), e segurar a conexão por minutos entregaria timeout ao usuário no
+// lugar do prêmio. Quem acompanha é o /api/status; quem varre o que ficou
+// para trás é o /api/reconcile.
+//
+// Inverter 3 e 5 (chamar a Lapak antes de travar o voucher) reabre o
+// resgate duplo: o create não tem chave de idempotência do lado deles.
 // ======================================================================
 //
 // Contrato:
 //   entrada    { code, content_id, player_data }
-//   stub ok    200 { status: "not_implemented", message }
+//   aceito     200 { status: "processing", attempt_ref }
+//   falhou     200 { status: "failed", message }        ← voucher volta a valer
 //   payload    400 { status: "invalid_payload", errors: { campo: msg } }
 //   voucher    200 { status: "invalid_or_unavailable" } | { status: "processing" }
+//   manutenção 200 { status: "maintenance", message }
 //   estourou   429 { error: "rate_limited", retry_after_seconds }
+//
+// Env vars (painel Netlify deste site):
+//   SUPABASE_URL, SUPABASE_SECRET_KEY, IP_HASH_SALT   (Brief 2)
+//   PROXY_RELOAD_KEY   chave do proxy, escopo do app de resgate
+//   LAPAK_ENV          prod | dev — obrigatória, sem default
+//   FX_USD_IDR, FX_BRL_USD   opcionais (só afetam cost_usd/cost_brl)
+//   REDEEM_ENABLED     "false" desliga o resgate sem deploy
 
 import {
   resolveCors,
@@ -35,7 +46,7 @@ import {
   readJsonBody,
 } from "../../lib/http.mjs";
 import { serverConfig, MisconfiguredError, UpstreamError } from "../../lib/supabase.mjs";
-import { hitRateLimit, retryAfterSeconds, MAX_ATTEMPTS } from "../../lib/rate-limit.mjs";
+import { hitRateLimit, retryAfterSeconds, MAX_ATTEMPTS, ipHash } from "../../lib/rate-limit.mjs";
 import {
   normalizeCode,
   isPlausibleCode,
@@ -44,11 +55,29 @@ import {
   evaluateVoucher,
 } from "../../lib/vouchers.mjs";
 import { fieldsForContent, validatePlayerData } from "../../lib/forms.mjs";
+import { lapakConfig, redeemEnabled, createOrder, convertCost, LapakError } from "../../lib/lapak.mjs";
+import {
+  claimVoucher,
+  releaseVoucher,
+  createAttempt,
+  recordOrder,
+  recordPlayerData,
+  deliveryData,
+  failAttempt,
+  markAttemptAmbiguous,
+  attemptRef,
+} from "../../lib/redeem.mjs";
 
 export const config = { path: "/api/redeem" };
 
 const MAINTENANCE_MESSAGE =
   "O resgate está em manutenção neste momento. Seu código continua válido — tente novamente mais tarde.";
+
+// Mensagem única de falha. Não diz QUAL erro a Lapak devolveu: o motivo
+// interessa ao log, não ao portador, e detalhar diferenciaria SKU sem
+// estoque de SKU inexistente — enumeração do catálogo por outra porta.
+const FAILED_MESSAGE =
+  "Não conseguimos concluir este resgate. Seu código continua válido e nada foi cobrado — escolha um conteúdo novamente.";
 
 export default async (req, context) => {
   const cors = resolveCors(req);
@@ -68,6 +97,13 @@ export default async (req, context) => {
       return json(500, { error: "server_misconfigured" }, cors);
     }
     throw err;
+  }
+
+  // Interruptor de pânico ANTES de qualquer coisa cara: desligado, este
+  // endpoint volta a ser o stub do Brief 2 e não toca em nada.
+  if (!redeemEnabled()) {
+    logEvent({ evt: "redeem", result: "maintenance" });
+    return json(200, { status: "maintenance", message: MAINTENANCE_MESSAGE }, cors);
   }
 
   const body = await readJsonBody(req);
@@ -130,12 +166,21 @@ export default async (req, context) => {
     return json(200, { status: "invalid_or_unavailable" }, cors);
   }
 
-  // Espelha o fail-closed do /api/validate: conteúdo sem formulário
-  // resolvível é recusado, nunca resgatado com campo adivinhado.
+  // Espelha o fail-closed do /api/validate — e agora carrega junto a trava
+  // SKU × delivery_type. Recusa ANTES do flip: um conteúdo mal cadastrado
+  // não pode nem consumir o voucher, quanto mais virar order.
+  //
+  // Os três motivos daqui (unmapped_sku, unmapped_delivery_sku,
+  // sku_delivery_mismatch) são SEMPRE erro nosso de cadastro, nunca do
+  // portador — mas ele vê a mensagem genérica. Por isso o console.error
+  // com o SKU: é o único jeito de o suporte distinguir "digitou errado"
+  // de "nosso lote está furado" (lição do Brief 2 §8.3).
   const form = fieldsForContent(content);
   if (!form.ok) {
     console.error(
-      `[redeem] ${form.reason}: conteúdo recusado, sku=${content.product_code} content_id=${content.id}`
+      `[redeem] ${form.reason}: conteúdo recusado, sku=${content.product_code} ` +
+        `content_id=${content.id} cadastrado=${content.delivery_type}` +
+        (form.expected ? ` esperado=${form.expected}` : "")
     );
     logEvent({ evt: "redeem", result: "invalid_or_unavailable", code: label, cause: form.reason });
     return json(200, { status: "invalid_or_unavailable" }, cors);
@@ -147,29 +192,127 @@ export default async (req, context) => {
     return json(400, { status: "invalid_payload", errors: checked.errors }, cors);
   }
 
+  // Config da Lapak só é exigida aqui: se faltar env var, o erro aparece
+  // ANTES do claim, com o voucher ainda intacto.
+  let lapak;
+  try {
+    lapak = lapakConfig();
+  } catch (err) {
+    if (err instanceof MisconfiguredError) {
+      console.error(`[redeem] ${err.message}`);
+      return json(500, { error: "server_misconfigured" }, cors);
+    }
+    throw err;
+  }
+
   // -------------------------------------------------------------------
-  // AQUI ENTRA O BRIEF 3.
-  // A partir deste ponto o payload está validado e o voucher está apto:
-  //   code (normalizado), content.id, content.product_code,
-  //   content.delivery_type, checked.clean (= player_data saneado).
-  //
-  // O redeemer real vai: flipar EMITIDO → PROCESSING (guardando contra
-  // corrida), gravar pv_redeem_attempts com attempt_ref único, chamar o
-  // create da Lapak via proxy, fazer polling do order_status, parsear o
-  // PIN quando delivery_type='PIN', e fechar em USADO ou voltar pra
-  // EMITIDO em caso de erro. NADA disso acontece neste brief.
+  // A PARTIR DAQUI O VOUCHER PODE MUDAR DE ESTADO.
   // -------------------------------------------------------------------
-  // `fields` são só os NOMES dos campos preenchidos. Valor de email e CPF
-  // não entra em log em nenhuma hipótese — mesma regra do código do voucher.
-  // checked.clean carrega dado pessoal e fica só em memória, nesta request.
-  logEvent({
+
+  let claim;
+  try {
+    claim = await claimVoucher(cfg, code);
+  } catch (err) {
+    console.error(`[redeem] claim failed code=${label}: ${err.message}`);
+    return json(503, { error: "temporarily_unavailable" }, cors);
+  }
+
+  // Perdeu a corrida. A leitura de segundos atrás dizia EMITIDO, então o
+  // cenário esperado é o duplo submit (duas abas): a outra request ganhou
+  // e está resgatando. `processing` é a resposta honesta — e é a exceção
+  // à mensagem genérica que o Brief 2 já abriu.
+  if (!claim) {
+    logEvent({ evt: "redeem", result: "claim_lost", code: label });
+    return json(200, { status: "processing" }, cors);
+  }
+
+  const ref = attemptRef(code, claim.attemptNumber);
+  const logBase = {
     evt: "redeem",
-    result: "not_implemented",
     code: label,
     content_id: content.id,
     delivery_type: content.delivery_type,
-    fields: Object.keys(checked.clean),
-  });
+    attempt: claim.attemptNumber,
+  };
 
-  return json(200, { status: "not_implemented", message: MAINTENANCE_MESSAGE }, cors);
+  let attempt;
+  try {
+    attempt = await createAttempt(cfg, {
+      voucherId: claim.voucherId,
+      attemptNumber: claim.attemptNumber,
+      code,
+      productCode: content.product_code,
+      clean: checked.clean,
+      ipHash: ipHash(clientIp(req, context), cfg.salt),
+    });
+  } catch (err) {
+    // Nenhuma order saiu: devolver o voucher é seguro e obrigatório.
+    console.error(`[redeem] attempt insert failed code=${label}: ${err.message}`);
+    await releaseVoucher(cfg, claim.voucherId).catch((e) =>
+      console.error(`[redeem] release após falha de attempt: ${e.message}`)
+    );
+    return json(503, { error: "temporarily_unavailable" }, cors);
+  }
+
+  // Para QUAL ID a recarga foi pedida fica registrado no voucher antes de
+  // qualquer coisa sair. Falhar aqui não impede o resgate — o create leva
+  // o mesmo user_id de qualquer forma — mas some com a trilha, então loga.
+  await recordPlayerData(cfg, claim.voucherId, deliveryData(checked.clean)).catch((err) =>
+    console.error(`[redeem] player_data não gravado code=${label}: ${err.message}`)
+  );
+
+  // ---------------- A ÚNICA CHAMADA QUE GASTA DINHEIRO ----------------
+  // `fields` são só os NOMES dos campos preenchidos. Valor de email, CPF e
+  // user_id não entra em log em nenhuma hipótese — nem o attempt_ref, que
+  // carrega o código completo dentro dele.
+  logEvent({ ...logBase, result: "order_create", fields: Object.keys(checked.clean) });
+
+  let order;
+  try {
+    order = await createOrder(lapak, {
+      productCode: content.product_code,
+      userId: content.delivery_type === "PIN" ? null : checked.clean.user_id,
+    });
+  } catch (err) {
+    if (!(err instanceof LapakError)) throw err;
+
+    if (err.definitive) {
+      // Temos prova de que nada foi criado: devolve o voucher pro portador.
+      await failAttempt(cfg, attempt.id, err.code).catch(() => {});
+      await releaseVoucher(cfg, claim.voucherId).catch((e) =>
+        console.error(`[redeem] release após erro definitivo: ${e.message}`)
+      );
+      logEvent({ ...logBase, result: "failed", error_code: err.code });
+      return json(200, { status: "failed", message: FAILED_MESSAGE }, cors);
+    }
+
+    // AMBÍGUO: a order pode existir e não temos tid pra conferir. O
+    // voucher FICA em PROCESSING de propósito — liberar aqui seria
+    // arriscar cobrar e entregar duas vezes. Vira caso humano.
+    await markAttemptAmbiguous(cfg, attempt.id, err.code).catch(() => {});
+    console.error(
+      `[redeem] AMBIGUOUS create (${err.code}) code=${label} attempt=${claim.attemptNumber} ` +
+        `sku=${content.product_code} — voucher fica em PROCESSING, conferir no painel da Lapak`
+    );
+    logEvent({ ...logBase, result: "ambiguous", error_code: err.code });
+    return json(200, { status: "processing", attempt_ref: ref }, cors);
+  }
+
+  // A order existe. Daqui pra frente nenhum erro pode devolver o voucher.
+  const cost = convertCost(order.totalPriceIdr, lapak);
+  try {
+    await recordOrder(cfg, attempt.id, { tid: order.tid, costIdr: order.totalPriceIdr, cost });
+  } catch (err) {
+    // O tid é o que liga a nossa trilha à order paga. Se não deu pra
+    // gravar, ele vai pro log — não é dado pessoal nem segredo, e sem ele
+    // a reconciliação fica cega.
+    console.error(
+      `[redeem] ORDER CRIADA MAS NÃO GRAVADA code=${label} tid=${order.tid} ` +
+        `attempt=${claim.attemptNumber}: ${err.message}`
+    );
+  }
+
+  logEvent({ ...logBase, result: "processing", tid: order.tid, cost_idr: order.totalPriceIdr });
+
+  return json(200, { status: "processing", attempt_ref: ref }, cors);
 };

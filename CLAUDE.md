@@ -37,7 +37,9 @@ e resgata.
 alcança este endpoint. Todo cuidado com oráculo de código, enumeração de
 catálogo e rate limit vive aqui.
 
-**Estado: Brief 2 entregue.** Validação real; resgate é stub. Ver §5.
+**Estado: Brief 3 entregue.** Resgate real, com dinheiro de verdade: claim
+atômico, order na Lapak via proxy, acompanhamento, PIN na tela, persistência e
+reconciliação. Ver §5.
 
 ---
 
@@ -48,6 +50,7 @@ catálogo e rate limit vive aqui.
 | Front | HTML + vanilla JS em `public/`. **Sem framework, sem build step.** |
 | Back | Netlify Functions v2 (ESM, `export const config = { path }`) |
 | Banco | Supabase `ashmirzgyuhspymldpfv`, tabelas `pv_*` (Brief 1) + `pv_validate_rate` |
+| Fornecedor | Lapak **só** via proxy `api.recargagames.com`, com `PROXY_RELOAD_KEY` |
 | Host | Netlify, site próprio, CD por push na `main` |
 | Deps | **zero** em produção. `package.json` existe só pelos scripts de teste. |
 
@@ -76,36 +79,60 @@ Tabelas `pv_*` do Brief 1 (schema em
 policy pra `anon` — este app lê com a Secret key, que bypassa RLS por design.
 
 Deste repo: `pv_validate_rate` (+ função `pv_validate_rate_hit`), em
-`migrations/2026-07-30-pv-validate-rate.sql`.
+`migrations/2026-07-30-pv-validate-rate.sql`; e as colunas de persistência do
+resgate + a função `pv_redeem_claim`, em
+`migrations/2026-07-31-pv-redeem.sql`.
 
 **Máquina de estados do voucher:**
 `EMITIDO → PROCESSING → USADO`; `CANCELADO` sai de `EMITIDO`; **`VENCIDO` não é
 status** — é derivado de `batch.expires_at`.
 
-Neste brief o app **só lê** `pv_vouchers`. O flip `EMITIDO → PROCESSING` é do
-Brief 3.
+Quem escreve em `pv_vouchers` é **só** `lib/redeem.mjs`, e sempre com UPDATE
+condicional no status atual (`status=eq.X`). UPDATE incondicional atropelaria o
+que a reconciliação ou outra request já decidiu.
 
 ---
 
-## 5. A fronteira do Brief 3 (a coisa mais importante deste arquivo)
+## 5. As regras do dinheiro (a coisa mais importante deste arquivo)
 
-`netlify/functions/redeem.mjs` é **stub**. Ele valida tudo e responde
-`{ status: "not_implemented" }`. O ponto exato onde o redeemer entra está
-marcado com um comentário no fim do arquivo.
+O resgate real está no ar. O que segue não é preferência de estilo — é o que
+separa uma operação sã de cobrar duas vezes pelo mesmo voucher.
 
-**Não fazer neste repo até o Brief 3 estar aberto:**
-- chamar a Lapak, nem em modo de teste, nem via proxy;
-- introduzir a chave admin do proxy (o `tests/check-secrets.sh` reprova);
-- escrever em `pv_vouchers` ou `pv_redeem_attempts`;
-- polling, webhook, parsing de PIN.
+**1. O claim atômico é a única barreira antidupla.** O `create` da Lapak não
+aceita referência externa (A0), então o fornecedor **não deduplica nada**. Só
+quem ganha o `pv_redeem_claim()` chama a Lapak. Jamais inverter a ordem "trava
+primeiro, pede depois", jamais chamar o create fora desse caminho.
 
-**Achados do teste A0 que o Brief 3 vai ter que respeitar:**
-- o `create` da Lapak **não aceita referência externa** → idempotência é 100%
-  nossa (daí o `attempt_ref` UNIQUE em `pv_redeem_attempts`);
-- **PIN não vem no create** — só aparece no `order_status`, dentro de
+**2. Nunca existe retry automático de create.** Nem em timeout, nem em 5xx,
+nem "só uma vez". Falhou, para e reporta.
+
+**3. Falha de create tem duas categorias, e a diferença vale dinheiro:**
+- `definitive` (proxy negou a chave, ou a Lapak respondeu com código de erro):
+  nada foi criado → devolve o voucher pra `EMITIDO`;
+- `ambiguous` (timeout nosso, 500 do proxy, 5xx da Lapak): a order **pode
+  existir** e não temos tid → o voucher **fica** em `PROCESSING` e vira alerta
+  de conferência manual. Tratar ambíguo como definitivo libera pra um segundo
+  resgate algo que já foi pago e entregue.
+
+**4. Status desconhecido da Lapak nunca libera o voucher.** A lista de status
+terminais é branca (`TERMINAL_ERROR_STATUS`, em `lib/lapak.mjs`).
+
+**5. `netlify/functions/reconcile.mjs` NUNCA cria order.** Só lê
+`order_status` e aplica o desfecho localmente.
+
+**6. PIN não é gravado em lugar nenhum** — nem no banco, nem em log. Passa em
+memória pela function e sobe na resposta. A reexibição de 24h rebusca na Lapak
+pelo tid.
+
+**Achados do teste A0, que o desenho respeita:**
+- contrato do create: `count_order` (não `quantity`), `product_code`, e
+  `user_id` **só** em DTU — voucher/PIN não manda `user_id`;
+- **PIN não vem no create** — só no `order_status`, em
   `data.data.transactions[i].voucher_code`, como string `"PIN : … Serial : …"`
-  separada por TAB. Exige polling + parsing.
-- contrato do create: `count_order` (não `quantity`), `user_id` (não `customer`).
+  separada por TAB. Daí o polling e o parsing;
+- `total_price` (IDR) vem na resposta síncrona do create;
+- `check_id` está OFF nos SKUs de Free Fire: entrega é final, sem conferência
+  prévia e sem reembolso.
 
 ---
 
@@ -119,18 +146,30 @@ marcado com um comentário no fim do arquivo.
 - **`product_code` nunca vai pro front.** Só `id`, `display_label`,
   `delivery_type` e os campos do form já resolvidos.
 - **Rate limit é fail-closed.** Erro no contador → 503, nunca "deixa passar".
-- **Secrets só em env var do Netlify.** `SUPABASE_SECRET_KEY` e `IP_HASH_SALT`.
-  Nada de chave do Supabase no front, nem a publishable — o front não fala com
-  o banco.
+  Dois baldes: 10/IP/10min pro validate+redeem, 150/IP/10min pro status (o
+  polling legítimo gasta ~100). Quem protege o fornecedor é o throttle de 3s
+  por attempt (`last_polled_at`), não o balde.
+- **Secrets só em env var do Netlify.** `SUPABASE_SECRET_KEY`, `IP_HASH_SALT` e
+  `PROXY_RELOAD_KEY`. Nada de chave do Supabase no front, nem a publishable — o
+  front não fala com o banco nem com o proxy.
+- **A chave admin do proxy não entra aqui.** O app usa a `PROXY_RELOAD_KEY`,
+  revogável isoladamente; `tests/check-secrets.sh` reprova a admin.
+- **`LAPAK_ENV` é obrigatória e sem default.** O proxy assume `dev` quando o
+  header falta, e order em `dev` marcaria voucher como usado sem entregar.
 - **SKU DTU sem categoria no `forms-map.json` é RECUSADO**
   (`fallback_category: null`). Nunca oferecer formulário genérico de DTU:
   campo errado = entrega no ID errado = prejuízo sem reembolso. Recusar o
   conteúdo, não o lote. Mapear categoria nova é editar `forms-map.json`.
+- **SKU sem regra em `sku_delivery_patterns` é RECUSADO nos dois tipos**
+  (`unknown_sku_delivery: "refuse"`), e SKU cujo tipo não bate com o cadastro
+  também. A recusa acontece **antes do claim** — cadastro errado não consome
+  voucher. É a trava que faltava no Brief 2 §8.2.
 - **Não logar código completo.** `codeLabel()` (4 chars + HMAC) é o único jeito
-  de um código aparecer em log.
+  de um código aparecer em log. O `attempt_ref` também não vai pra log: ele
+  carrega o código inteiro dentro dele.
 - **Não logar dado pessoal.** Email, CPF e `user_id` nunca vão pra log — nem em
   debug temporário. No máximo os nomes dos campos (`Object.keys(clean)`).
-  `player_data` saneado vive só em memória, dentro da request.
+- **Não logar PIN.** Nunca, nem truncado. Ele não é persistido também.
 - **IP cru não é persistido.** Só `HMAC(salt, ip)`.
 - **CORS restrito** ao próprio domínio + URLs de deploy do site.
 - Mudança em RLS, em rate limit ou na uniformidade das mensagens = **modo
@@ -145,11 +184,12 @@ no `forms-map.json`, mensagem de erro do front.
 
 Atenção: **campo novo em `common_fields` não é MVP** — é coleta de dado
 pessoal. Passa por modo cuidado (finalidade, consentimento, o que vai pro log
-e o que o Brief 3 persiste).
+e o que é persistido).
 
 **Modo cuidado (devagar e checado):** qualquer coisa que toque em
-`/api/validate`, `/api/redeem`, rate limit, RLS, CORS, tratamento de código,
-ou que aproxime o repo da Lapak.
+`/api/validate`, `/api/redeem`, `/api/status`, a reconciliação, rate limit,
+RLS, CORS, tratamento de código, ou o caminho da Lapak. Na prática: quase tudo
+que não seja copy ou CSS.
 
 ---
 
@@ -163,21 +203,31 @@ outro repo), multi-idioma, reenvio de PIN por e-mail, carrinho, pagamento.
 ## 9. Comandos úteis
 
 ```bash
-npm test                     # functions com Supabase stubado (23 testes)
-npm run check:secrets        # secrets/SKU no bundle público
+npm test                     # 88 testes, Supabase e Lapak stubados
+npm run check:secrets        # secrets/SKU/credencial no bundle público
 node tests/dev-server.mjs    # harness local em :8000, functions reais
 ```
 
-Códigos de teste do harness: ver tabela no README.
+Códigos de teste do harness: ver tabela no README. O harness tem Lapak falsa —
+inclusive códigos que exercitam falha do fornecedor e timeout ambíguo.
 
 ## 10. Recuperação de emergência
 
+- **Desligar o resgate sem deploy:** `REDEEM_ENABLED=false` no painel do
+  Netlify. Volta a responder manutenção e não toca em nada.
 - **App quebrado em produção:** `git revert HEAD && git push` (Netlify
   republica em ~30s). Nada aqui afeta loja, admin ou proxy.
 - **Todas as respostas 503:** provavelmente o rate limit não consegue gravar.
-  Checar se a migration `pv_validate_rate` está aplicada e se o RPC
-  `pv_validate_rate_hit` existe (`NOTIFY pgrst, 'reload schema';` se o
-  PostgREST não estiver vendo a função).
+  Checar se a migration `pv_validate_rate` está aplicada e se os RPCs
+  `pv_validate_rate_hit` e `pv_redeem_claim` existem
+  (`NOTIFY pgrst, 'reload schema';` se o PostgREST não estiver vendo).
 - **Todas as respostas 500 `server_misconfigured`:** falta env var. O log da
   function diz qual.
-- **Rollback do banco:** bloco comentado no fim do arquivo de migration.
+- **Voucher preso em PROCESSING:** a reconciliação resolve em até 20 min. Se
+  persistir, o log traz `conferência manual` — é o caso ambíguo, sem tid.
+  Procurar a order no painel da Lapak pelo horário e pelo SKU **antes** de
+  mexer no voucher à mão. Nunca liberar sem confirmar que não houve entrega.
+- **Resgate concluído mas o portador perdeu o PIN:** dentro de 24h ele reaparece
+  no `/api/status`. Depois disso, buscar pelo `order_ref` (tid) do voucher no
+  `order_status` da Lapak.
+- **Rollback do banco:** bloco comentado no fim de cada migration.
