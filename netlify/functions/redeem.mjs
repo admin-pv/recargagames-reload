@@ -146,7 +146,9 @@ export default async (req, context) => {
     voucher = await findVoucher(cfg, code);
   } catch (err) {
     if (err instanceof UpstreamError) {
-      console.error(`[redeem] ${err.message}`);
+      // Rótulo mascarado: a mensagem do erro é redigida na origem e não
+      // carrega mais o código, então o rastro tem que vir daqui.
+      console.error(`[redeem] code=${label} ${err.message}`);
       return json(503, { error: "temporarily_unavailable" }, cors);
     }
     throw err;
