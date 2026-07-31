@@ -131,7 +131,9 @@ export default async (req, context) => {
     attempt = await findAttempt(cfg, ref);
   } catch (err) {
     if (err instanceof UpstreamError) {
-      console.error(`[status] ${err.message}`);
+      // Rótulo mascarado: nem a mensagem redigida nem o attempt_ref podem
+      // aparecer aqui — o attempt_ref carrega o código inteiro.
+      console.error(`[status] code=${label} ${err.message}`);
       return json(503, { error: "temporarily_unavailable" }, cors);
     }
     throw err;

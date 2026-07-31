@@ -95,7 +95,10 @@ export default async (req, context) => {
     voucher = await findVoucher(cfg, code);
   } catch (err) {
     if (err instanceof UpstreamError) {
-      console.error(`[validate] ${err.message}`);
+      // O rótulo mascarado entra aqui de propósito: a mensagem do erro é
+      // redigida (não traz mais o código), então sem ele não haveria como
+      // ligar a falha a um resgate.
+      console.error(`[validate] code=${label} ${err.message}`);
       return json(503, { error: "temporarily_unavailable" }, cors);
     }
     throw err;
