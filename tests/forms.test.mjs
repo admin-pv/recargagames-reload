@@ -15,23 +15,66 @@ import {
   validatePlayerData,
   isValidCpf,
   purposeNote,
+  checkSkuDelivery,
+  expectedDeliveryType,
 } from "../lib/forms.mjs";
 
 const DTU = { id: "c1", delivery_type: "DTU", product_code: "FF100_10-S116-br" };
 const PIN = { id: "c2", delivery_type: "PIN", product_code: "FFBV100-S22-br" };
 const DTU_NAO_MAPEADO = { id: "c3", delivery_type: "DTU", product_code: "MLBB50-S9-br" };
+// O caso do Brief 2 §8.2: SKU de voucher (PIN) cadastrado como DTU.
+const SKU_TROCADO = { id: "c4", delivery_type: "DTU", product_code: "FFBV100-S22-br" };
 
 const fieldsOf = (content) => fieldsForContent(content).fields;
 
-test("fail-closed: DTU sem categoria mapeada não resolve formulário", () => {
+test("fail-closed: SKU sem regra de entrega não resolve formulário", () => {
   const mapeado = fieldsForContent(DTU);
   assert.equal(mapeado.ok, true);
   assert.equal(mapeado.categoryKey, "free_fire");
 
+  // MLBB não casa com nenhum sku_delivery_pattern: barra na trava de
+  // entrega, antes mesmo de faltar categoria.
   const naoMapeado = fieldsForContent(DTU_NAO_MAPEADO);
   assert.equal(naoMapeado.ok, false);
-  assert.equal(naoMapeado.reason, "unmapped_sku");
+  assert.equal(naoMapeado.reason, "unmapped_delivery_sku");
   assert.deepEqual(naoMapeado.fields, []);
+});
+
+/* ---------------- trava SKU × delivery_type (Brief 3) --------------- */
+
+test("expectedDeliveryType: FFBV é PIN e FF é DTU — a ordem dos patterns importa", () => {
+  // Se ^FF viesse antes de ^FFBV no mapa, todo voucher Free Fire seria
+  // classificado como top-up e a trava inverteria de sinal.
+  assert.equal(expectedDeliveryType("FFBV100-S22-br"), "PIN");
+  assert.equal(expectedDeliveryType("FF100_10-S116-br"), "DTU");
+  assert.equal(expectedDeliveryType("MLBB50-S9-br"), null);
+});
+
+test("SKU de voucher cadastrado como DTU é RECUSADO (§8.2 do Brief 2)", () => {
+  const verdict = checkSkuDelivery(SKU_TROCADO);
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, "sku_delivery_mismatch");
+  assert.equal(verdict.expected, "PIN");
+
+  // E o formulário não sai: sem isso o app pediria user_id pra um produto
+  // que entrega PIN, e a order sairia com o campo errado.
+  const form = fieldsForContent(SKU_TROCADO);
+  assert.equal(form.ok, false);
+  assert.equal(form.reason, "sku_delivery_mismatch");
+});
+
+test("SKU desconhecido é recusado inclusive em PIN", () => {
+  // PIN não passa por categoria, então a trava de entrega é a ÚNICA
+  // defesa dele contra SKU não conferido.
+  const pinDesconhecido = { id: "c5", delivery_type: "PIN", product_code: "MLBB50-S9-br" };
+  const form = fieldsForContent(pinDesconhecido);
+  assert.equal(form.ok, false);
+  assert.equal(form.reason, "unmapped_delivery_sku");
+});
+
+test("cadastro correto passa nos dois tipos", () => {
+  assert.equal(checkSkuDelivery(DTU).ok, true);
+  assert.equal(checkSkuDelivery(PIN).ok, true);
 });
 
 test("PIN resolve só os campos comuns", () => {

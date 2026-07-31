@@ -4,6 +4,11 @@
    nem a Lapak. Cobre a matriz de "critério de pronto" do Brief 2 no nível
    de lógica; o teste de ponta a ponta com lote real é manual, no preview.
 
+   Foco deste arquivo: /api/validate e o CONTRATO DE ENTRADA do
+   /api/redeem (payload, uniformidade das mensagens, PII fora do log).
+   O fluxo do dinheiro — claim atômico, create, desfecho, reconciliação —
+   está em redeem.test.mjs.
+
    Rodar:  npm test        (ou: node --test tests/)
    ===================================================================== */
 
@@ -14,6 +19,8 @@ process.env.SUPABASE_URL = "https://stub.supabase.co";
 process.env.SUPABASE_SECRET_KEY = "sb_secret_STUB_NAO_REAL";
 process.env.IP_HASH_SALT = "salt-de-teste-nao-real";
 process.env.URL = "https://reload.recargagames.com";
+process.env.PROXY_RELOAD_KEY = "proxy-key-STUB-NAO-REAL";
+process.env.LAPAK_ENV = "dev";
 
 const ORIGIN = "https://reload.recargagames.com";
 
@@ -91,7 +98,7 @@ const VOUCHERS = {
   },
 };
 
-const db = { attempts: 0, rateFails: false, calls: [], logs: [] };
+const db = { attempts: 0, rateFails: false, calls: [], logs: [], attemptWrites: [] };
 
 function jsonResponse(value) {
   return new Response(JSON.stringify(value), {
@@ -100,20 +107,41 @@ function jsonResponse(value) {
   });
 }
 
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, init = {}) => {
   const target = String(url);
-  db.calls.push(target);
+  const method = init.method || "GET";
+  db.calls.push(`${method} ${target}`);
 
   if (target.includes("/rpc/pv_validate_rate_hit")) {
     if (db.rateFails) return new Response("db down", { status: 500 });
     db.attempts += 1;
     return jsonResponse(db.attempts);
   }
+  // Claim sempre concede: este arquivo testa o contrato de ENTRADA, não a
+  // corrida. A matriz do claim está em redeem.test.mjs.
+  if (target.includes("/rpc/pv_redeem_claim")) {
+    return jsonResponse([{ voucher_id: "voucher-stub", attempt_number: 1 }]);
+  }
+  if (target.includes("/rest/v1/pv_redeem_attempts")) {
+    db.attemptWrites.push({ method, body: init.body ? JSON.parse(init.body) : null });
+    return jsonResponse([{ id: "attempt-stub" }]);
+  }
+  if (target.includes("/rest/v1/pv_vouchers") && method !== "GET") {
+    return jsonResponse([{ id: "voucher-stub" }]);
+  }
   if (target.includes("/rest/v1/pv_vouchers")) {
     const match = target.match(/code=eq\.([^&]+)/);
     const code = decodeURIComponent(match ? match[1] : "");
     const voucher = VOUCHERS[code];
     return jsonResponse(voucher ? [voucher] : []);
+  }
+  // Proxy da Lapak: create sempre bem-sucedido.
+  if (target.includes("/api/order")) {
+    return jsonResponse({
+      status: 200,
+      ok: true,
+      data: { code: "SUCCESS", data: { tid: "RA-STUB-1", total_price: 12659 } },
+    });
   }
   throw new Error(`fetch inesperado no teste: ${target}`);
 };
@@ -158,6 +186,7 @@ beforeEach(() => {
   db.rateFails = false;
   db.calls = [];
   db.logs = [];
+  db.attemptWrites = [];
 });
 
 /* ------------------------- /api/validate -------------------------- */
@@ -268,7 +297,7 @@ test("SKU DTU fora do forms-map é recusado, não vira formulário genérico", a
   assert.equal(body.contents.length, 1);
   assert.equal(body.contents[0].id, CONTENT_DTU);
   // E o SKU problemático é logado pra ser mapeado.
-  assert.ok(db.logs.some((l) => l.includes("unmapped_sku") && l.includes("MLBB50-S9-br")));
+  assert.ok(db.logs.some((l) => l.includes("unmapped_delivery_sku") && l.includes("MLBB50-S9-br")));
 });
 
 test("lote cujo único conteúdo é SKU não mapeado devolve a genérica", async () => {
@@ -396,24 +425,25 @@ test("log nunca contém o código completo, só 4 chars + hash", async () => {
 
 /* -------------------------- /api/redeem --------------------------- */
 
-test("stub do redeem: DTU com payload completo devolve not_implemented", async () => {
+test("redeem aceita DTU com payload completo e devolve processing + attempt_ref", async () => {
   const { res, body } = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
     player_data: okPlayer(),
   });
   assert.equal(res.status, 200);
-  assert.equal(body.status, "not_implemented");
-  assert.match(body.message, /manutenção/i);
+  assert.equal(body.status, "processing");
+  // attempt_ref é <code>-a<n>: o front precisa dele pra acompanhar.
+  assert.equal(body.attempt_ref, "RLBK-VALIDO0001-a1");
 });
 
-test("stub do redeem: PIN não exige user_id, mas exige email", async () => {
+test("redeem: PIN não exige user_id, mas exige email", async () => {
   const ok = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_PIN,
     player_data: { email: VALID_EMAIL, marketing_optin: true },
   });
-  assert.equal(ok.body.status, "not_implemented");
+  assert.equal(ok.body.status, "processing");
 
   db.attempts = 0;
   const semEmail = await callRedeem({
@@ -466,7 +496,7 @@ test("email: obrigatório e com validação de formato", async () => {
     content_id: CONTENT_DTU,
     player_data: okPlayer({ email: "Jogador.Teste+tag@Sub.Dominio.com.br" }),
   });
-  assert.equal(ok.body.status, "not_implemented");
+  assert.equal(ok.body.status, "processing");
 });
 
 test("CPF: opcional quando vazio, validado por dígito verificador quando preenchido", async () => {
@@ -479,7 +509,7 @@ test("CPF: opcional quando vazio, validado por dígito verificador quando preenc
       player_data: player,
     });
     assert.equal(res.status, 200);
-    assert.equal(body.status, "not_implemented");
+    assert.equal(body.status, "processing");
   }
 
   // Dígito verificador errado, tamanho errado e repetido são recusados.
@@ -502,7 +532,7 @@ test("CPF: opcional quando vazio, validado por dígito verificador quando preenc
       content_id: CONTENT_DTU,
       player_data: okPlayer({ cpf }),
     });
-    assert.equal(body.status, "not_implemented");
+    assert.equal(body.status, "processing");
   }
 });
 
@@ -515,8 +545,8 @@ test("marketing_optin sempre entra no payload limpo, marcado ou não", async () 
       content_id: CONTENT_DTU,
       player_data: okPlayer({ marketing_optin: enviado }),
     });
-    assert.equal(body.status, "not_implemented");
-    const line = db.logs.find((l) => l.includes("not_implemented"));
+    assert.equal(body.status, "processing");
+    const line = db.logs.find((l) => l.includes("order_create"));
     // A chave aparece nos três casos, inclusive quando o cliente não manda
     // nada: consentimento é escolha explícita, não ausência de resposta.
     // (O VALOR não vai pro log — ver o teste de validatePlayerData abaixo.)
@@ -538,7 +568,7 @@ test("email e CPF NUNCA aparecem em log de function", async () => {
   assert.ok(!joined.includes(VALID_CPF_DIGITS), "CPF em dígitos apareceu no log");
   assert.ok(!joined.includes("13846816197"), "user_id apareceu no log");
   // Só os NOMES dos campos.
-  const line = db.logs.find((l) => l.includes("not_implemented"));
+  const line = db.logs.find((l) => l.includes("order_create"));
   assert.deepEqual(JSON.parse(line).fields, ["user_id", "email", "cpf", "marketing_optin"]);
 });
 
@@ -572,7 +602,10 @@ test("redeem recusa SKU fora do forms-map mesmo com content_id certo", async () 
   });
   assert.equal(res.status, 200);
   assert.equal(body.status, "invalid_or_unavailable");
-  assert.ok(db.logs.some((l) => l.includes("unmapped_sku")));
+  assert.ok(db.logs.some((l) => l.includes("unmapped_delivery_sku")));
+  // A recusa acontece ANTES do claim: o voucher não pode ser consumido
+  // por um conteúdo que nunca viraria order.
+  assert.ok(!db.calls.some((c) => c.includes("pv_redeem_claim")));
 });
 
 test("redeem em voucher usado/vencido devolve a genérica", async () => {
@@ -609,21 +642,48 @@ test("redeem descarta campos extras que o cliente inventar", async () => {
     content_id: CONTENT_DTU,
     player_data: okPlayer({ product_code: "FF-HACK", admin: true, is_paid: true }),
   });
-  const line = db.logs.find((l) => l.includes("not_implemented"));
+  const line = db.logs.find((l) => l.includes("order_create"));
   assert.ok(line);
   assert.deepEqual(JSON.parse(line).fields, ["user_id", "email", "cpf", "marketing_optin"]);
 });
 
-test("redeem não fala com a Lapak nem escreve em pv_vouchers", async () => {
-  await callRedeem({
+test("voucher indisponível não chega nem perto da Lapak", async () => {
+  for (const code of ["RLBK-USADO00001", "RLBK-VENCIDO001", "RLBK-PROCESS001", "RLBK-NAOEXISTE1"]) {
+    db.attempts = 0;
+    db.calls = [];
+    await callRedeem({ code, content_id: CONTENT_DTU, player_data: okPlayer() });
+    for (const call of db.calls) {
+      assert.ok(!/\/api\/order/.test(call), `chamada à Lapak com voucher ${code}: ${call}`);
+      assert.ok(!/pv_redeem_claim/.test(call), `claim com voucher ${code}`);
+    }
+  }
+});
+
+test("payload inválido não consome o voucher: 400 acontece antes do claim", async () => {
+  const { res } = await callRedeem({
     code: "RLBK-VALIDO0001",
     content_id: CONTENT_DTU,
-    player_data: okPlayer(),
+    player_data: okPlayer({ email: "" }),
   });
-  for (const call of db.calls) {
-    assert.ok(!/lapak|recargagames\.com\/api|proxy/i.test(call), `chamada suspeita: ${call}`);
+  assert.equal(res.status, 400);
+  assert.ok(!db.calls.some((c) => c.includes("pv_redeem_claim")));
+  assert.ok(!db.calls.some((c) => c.includes("/api/order")));
+});
+
+test("REDEEM_ENABLED=false devolve manutenção sem tocar em nada", async () => {
+  process.env.REDEEM_ENABLED = "false";
+  try {
+    const { res, body } = await callRedeem({
+      code: "RLBK-VALIDO0001",
+      content_id: CONTENT_DTU,
+      player_data: okPlayer(),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(body.status, "maintenance");
+    assert.match(body.message, /manutenção/i);
+    // Interruptor de pânico de verdade: nem o banco é consultado.
+    assert.equal(db.calls.length, 0);
+  } finally {
+    delete process.env.REDEEM_ENABLED;
   }
-  // Só duas chamadas: rate limit (RPC) e leitura do voucher.
-  assert.equal(db.calls.filter((c) => c.includes("pv_vouchers")).length, 1);
-  assert.equal(db.calls.length, 2);
 });
