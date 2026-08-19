@@ -42,6 +42,7 @@ import {
 import { normalizeCode, isPlausibleCode } from "../../lib/vouchers.mjs";
 import { expectedDeliveryType } from "../../lib/forms.mjs";
 import { loadSkuMap } from "../../lib/sku-map.mjs";
+import { sendPinEmail } from "../../lib/notify.mjs";
 import { lapakConfig, orderStatus, LapakError, TERMINAL_ERROR_STATUS } from "../../lib/lapak.mjs";
 import {
   findAttempt,
@@ -265,7 +266,25 @@ async function settleSuccess(cfg, attempt, result, { cors, logBase, delivery }) 
     tid: attempt.lapak_tid,
     productCode: attempt.product_code,
     pinDelivered: !!pin,
+    // Entra na fila do email (Brief 5). Marcado ANTES de tentar enviar:
+    // se o envio abaixo falhar, a pendência já está no banco e a
+    // reconciliação reencontra no próximo tick.
+    pinEmailDue: !!pin,
   });
+
+  // Email do PIN. Não bloqueia e não altera a resposta: o portador está
+  // na tela vendo o código agora, e o email é a cópia de segurança pra
+  // quando ele fechar a aba. Falha aqui vira pendência, nunca erro.
+  if (pin) {
+    await sendPinEmail(cfg, {
+      attemptId: attempt.id,
+      email: attempt.email,
+      locale: attempt.voucher?.batch?.locale,
+      pin,
+      serial: result.serial,
+      label: logBase.code,
+    });
+  }
 
   // PIN entregue mas não parseado é um caso a investigar: o resgate está
   // pago e concluído, e o portador ficou sem o código na tela. O tid vai

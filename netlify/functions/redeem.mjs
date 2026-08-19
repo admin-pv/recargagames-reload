@@ -56,6 +56,7 @@ import {
 } from "../../lib/vouchers.mjs";
 import { fieldsForContent, validatePlayerData } from "../../lib/forms.mjs";
 import { loadSkuMap } from "../../lib/sku-map.mjs";
+import { sendWelcome } from "../../lib/notify.mjs";
 import { lapakConfig, redeemEnabled, createOrder, convertCost, LapakError } from "../../lib/lapak.mjs";
 import {
   claimVoucher,
@@ -285,6 +286,25 @@ export default async (req, context) => {
   await recordPlayerData(cfg, claim.voucherId, deliveryData(checked.clean)).catch((err) =>
     console.error(`[redeem] player_data não gravado code=${label}: ${err.message}`)
   );
+
+  // Boas-vindas (Brief 5). Fica ANTES do create e fora do caminho crítico:
+  // é `await` só pra não deixar promessa solta num runtime que pode
+  // congelar a function depois da resposta, mas o retorno é ignorado e a
+  // função não lança — nem chave faltando, nem Resend fora do ar chegam
+  // aqui como erro. Uma vez por voucher: quem envia é quem ganha o UPDATE
+  // condicional lá dentro.
+  //
+  // RESSALVA CONHECIDA: se o create falhar logo abaixo, o voucher volta
+  // pra EMITIDO e o portador já terá recebido "recebemos seu resgate".
+  // É o que o brief pede (disparo no sucesso do claim) e o custo é um
+  // email a mais; a alternativa — mandar só depois do create — deixaria
+  // sem email justamente quem fecha a aba durante a espera.
+  await sendWelcome(cfg, {
+    voucherId: claim.voucherId,
+    email: checked.clean.email,
+    locale: verdict.batch.locale,
+    label,
+  });
 
   // ---------------- A ÚNICA CHAMADA QUE GASTA DINHEIRO ----------------
   // `fields` são só os NOMES dos campos preenchidos. Valor de email, CPF e
