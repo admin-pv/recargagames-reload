@@ -48,6 +48,7 @@ reconciliação. Ver §5.
 | Camada | Decisão |
 |---|---|
 | Front | HTML + vanilla JS em `public/`. **Sem framework, sem build step.** |
+| Idiomas | `pt-BR` e `es-MX`, escolhidos pelo **hostname**. Mesmo site Netlify, domain alias. |
 | Back | Netlify Functions v2 (ESM, `export const config = { path }`) |
 | Banco | Supabase `ashmirzgyuhspymldpfv`, tabelas `pv_*` (Brief 1) + `pv_validate_rate` |
 | Fornecedor | Lapak **só** via proxy `api.recargagames.com`, com `PROXY_RELOAD_KEY` |
@@ -174,6 +175,16 @@ cortesia. Se algum dia um `throw` escapar de lá, é bug de severidade alta.
   revogável isoladamente; `tests/check-secrets.sh` reprova a admin.
 - **`LAPAK_ENV` é obrigatória e sem default.** O proxy assume `dev` quando o
   header falta, e order em `dev` marcaria voucher como usado sem entregar.
+- **Campo de contato ausente no idioma é RECUSA, não descarte.** `cpf` declara
+  `"locales": ["pt-BR"]`, então em `es-MX` o servidor não o envia e um payload
+  que o traga preenchido leva 400. Descartar em silêncio esconderia um front
+  desatualizado ainda coletando documento de brasileiro de quem não é. A recusa
+  é estreita de propósito — só campos de contato escondidos naquele locale, não
+  qualquer chave extra, que continua sendo ignorada.
+- **O locale do cliente é entrada não confiável e FAIL-OPEN.** `resolveLocale()`
+  devolve o default para qualquer coisa fora da lista. É a exceção consciente ao
+  fail-closed do repo: nenhuma decisão de dinheiro depende do idioma, e um
+  resgate bloqueado por parâmetro de locale seria pior que uma tela em português.
 - **SKU DTU sem categoria no `forms-map.json` é RECUSADO**
   (`fallback_category: null`). Nunca oferecer formulário genérico de DTU:
   campo errado = entrega no ID errado = prejuízo sem reembolso. Recusar o
@@ -233,6 +244,14 @@ Atenção: **campo novo em `common_fields` não é MVP** — é coleta de dado
 pessoal. Passa por modo cuidado (finalidade, consentimento, o que vai pro log
 e o que é persistido).
 
+**i18n (Brief 7) — onde cada texto vive.** A casca (títulos, botões, mensagens
+de estado) fica em `public/i18n.js`, por chave, com o pt-BR escrito no
+`index.html` como fallback. Os textos dos CAMPOS do formulário e a linha de
+finalidade ficam no `forms-map.json` e vêm do servidor já traduzidos — o
+formulário é dirigido pelo servidor desde o Brief 2. **Não criar dicionário de
+campo no front:** seria uma segunda fonte de verdade, e é justamente o que a
+decisão do Brief 7 evitou.
+
 **Modo cuidado (devagar e checado):** qualquer coisa que toque em
 `/api/validate`, `/api/redeem`, `/api/status`, a reconciliação, rate limit,
 RLS, CORS, tratamento de código, ou o caminho da Lapak. Na prática: quase tudo
@@ -243,14 +262,22 @@ que não seja copy ou CSS.
 ## 8. Fora de escopo (não construir)
 
 Login/conta de usuário, histórico de resgates pro usuário, painel admin (é o
-outro repo), multi-idioma, reenvio de PIN por e-mail, carrinho, pagamento.
+outro repo), carrinho, pagamento.
+
+**Idiomas além de pt-BR e es-MX** continuam fora: cada um novo exige tradução
+nos três lugares (`public/i18n.js`, `forms-map.json` e
+`lib/email-templates.mjs`) e uma entrada em `lib/locale.mjs`.
+
+**Multi-marca** (Topup.games e afins) está fora. A assinatura
+"TOP-UP. PLAY MORE." é de outra marca do grupo e **não** aparece neste app — a
+tagline daqui é "RECARGA. JOGUE MAIS." / "RECARGA. JUEGA MÁS.".
 
 ---
 
 ## 9. Comandos úteis
 
 ```bash
-npm test                     # 158 testes, Supabase, Lapak e Resend stubados
+npm test                     # 186 testes, Supabase, Lapak e Resend stubados
 npm run check:secrets        # secrets/SKU/credencial no bundle público
 node tests/dev-server.mjs    # harness local em :8000, functions reais
 ```
@@ -290,4 +317,9 @@ inclusive códigos que exercitam falha do fornecedor e timeout ambíguo.
   problema de email afeta o status do voucher.
 - **Parar os emails sem deploy:** remover `RESEND_API_KEY` do painel do
   Netlify. Os resgates seguem normais e nada mais é enviado.
+- **Desligar o es-MX sem deploy:** remover o domain alias
+  `plusmo.recargagames.com` no painel do Netlify. Só o hostname ativa o
+  idioma; `reload.recargagames.com` nunca passa por esse caminho.
+- **Tela em espanhol num hostname errado:** conferir `HOST_LOCALE` em
+  `public/i18n.js`. Em produção o `?locale=` é ignorado, então não é isso.
 - **Rollback do banco:** bloco comentado no fim de cada migration.

@@ -819,3 +819,108 @@ test("o catálogo não é lido para código inválido — sondar não custa banc
   await callValidate({ code: "RLBK-NAOEXISTE1" });
   assert.ok(!db.calls.some((c) => c.includes("pv_sku_delivery_map")));
 });
+
+/* ================== locale es-MX — Brief 7 ======================== */
+
+test("validate em es-MX não devolve o campo cpf em conteúdo nenhum", async () => {
+  // Critério de pronto do brief. O front não precisa filtrar nada: o
+  // campo não chega.
+  const { body } = await callValidate({ code: "RLBK-VALIDO0001", locale: "es-MX" });
+  assert.equal(body.valid, true);
+  assert.equal(body.contents.length, 2);
+
+  for (const content of body.contents) {
+    const nomes = content.fields.map((f) => f.field);
+    assert.equal(nomes.includes("cpf"), false, `cpf veio em ${content.delivery_type}`);
+    assert.equal(
+      content.fields.some((f) => f.type === "cpf"),
+      false
+    );
+  }
+
+  // E os textos chegam traduzidos, do servidor.
+  const email = body.contents[0].fields.find((f) => f.field === "email");
+  assert.equal(email.label, "Correo electrónico");
+  assert.match(body.purpose_note, /prevenir fraudes/);
+});
+
+test("validate em pt-BR continua igual — regressão do site brasileiro", async () => {
+  for (const payload of [
+    { code: "RLBK-VALIDO0001" },
+    { code: "RLBK-VALIDO0001", locale: "pt-BR" },
+    { code: "RLBK-VALIDO0001", locale: "en-US" },
+  ]) {
+    const { body } = await callValidate(payload);
+    assert.equal(body.valid, true);
+    const nomes = body.contents[0].fields.map((f) => f.field);
+    assert.ok(nomes.includes("cpf"), `cpf sumiu do pt-BR com ${JSON.stringify(payload)}`);
+    const email = body.contents[0].fields.find((f) => f.field === "email");
+    assert.equal(email.label, "Email");
+    assert.match(body.purpose_note, /prevenção a fraude/);
+  }
+});
+
+test("redeem em es-MX RECUSA payload que traz cpf", async () => {
+  // O outro critério extra. Recusa, não descarte silencioso: um cpf aqui
+  // é front desatualizado ou chamada à mão, e os dois precisam aparecer.
+  const { res, body } = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    locale: "es-MX",
+    player_data: { email: "jugador@correo.com", cpf: VALID_CPF, marketing_optin: false },
+  });
+
+  assert.equal(res.status, 400);
+  assert.equal(body.status, "invalid_payload");
+  assert.ok(body.errors.cpf, "não apontou o cpf como erro");
+
+  // E nada foi consumido: a recusa acontece antes do claim.
+  assert.ok(!db.calls.some((c) => c.includes("pv_redeem_claim")), "travou o voucher");
+  assert.ok(!db.calls.some((c) => c.includes("/api/order")), "chamou a Lapak");
+});
+
+test("redeem em es-MX sem cpf passa normalmente", async () => {
+  const { body } = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    locale: "es-MX",
+    player_data: { email: "jugador@correo.com", marketing_optin: false },
+  });
+  assert.equal(body.status, "processing");
+});
+
+test("redeem em pt-BR com cpf continua aceitando", async () => {
+  const { body } = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    locale: "pt-BR",
+    player_data: { email: VALID_EMAIL, cpf: VALID_CPF, marketing_optin: false },
+  });
+  assert.equal(body.status, "processing");
+
+  const write = db.attemptWrites.find((w) => w.method === "POST");
+  assert.equal(write.body.cpf, VALID_CPF_DIGITS, "o cpf devia ter sido gravado");
+});
+
+test("o cpf recusado em es-MX nunca chega ao banco", async () => {
+  await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    locale: "es-MX",
+    player_data: { email: "jugador@correo.com", cpf: VALID_CPF, marketing_optin: false },
+  });
+  assert.equal(db.attemptWrites.length, 0, "gravou attempt de um payload recusado");
+});
+
+test("nenhum dado do payload es-MX vai pro log, cpf recusado incluído", async () => {
+  await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    locale: "es-MX",
+    player_data: { email: "jugador@correo.com", cpf: VALID_CPF, marketing_optin: false },
+  });
+  const joined = db.logs.join("\n");
+  assert.ok(!joined.includes(VALID_CPF), "cpf no log");
+  assert.ok(!joined.includes(VALID_CPF_DIGITS), "cpf (dígitos) no log");
+  assert.ok(!joined.includes("jugador@correo.com"), "email no log");
+});
