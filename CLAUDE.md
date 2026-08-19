@@ -79,9 +79,13 @@ Tabelas `pv_*` do Brief 1 (schema em
 policy pra `anon` — este app lê com a Secret key, que bypassa RLS por design.
 
 Deste repo: `pv_validate_rate` (+ função `pv_validate_rate_hit`), em
-`migrations/2026-07-30-pv-validate-rate.sql`; e as colunas de persistência do
+`migrations/2026-07-30-pv-validate-rate.sql`; as colunas de persistência do
 resgate + a função `pv_redeem_claim`, em
-`migrations/2026-07-31-pv-redeem.sql`.
+`migrations/2026-07-31-pv-redeem.sql`; e **`pv_sku_delivery_map`**, o catálogo
+SKU → tipo de entrega, em `migrations/2026-08-19-pv-sku-delivery-map.sql`
+(Brief 6). Esta última é a única tabela `pv_*` que o app **lê** e o admin
+**escreve** — CRUD pelo painel ainda não existe (Brief 4); até lá, INSERT no
+SQL Editor.
 
 **Máquina de estados do voucher:**
 `EMITIDO → PROCESSING → USADO`; `CANCELADO` sai de `EMITIDO`; **`VENCIDO` não é
@@ -160,10 +164,20 @@ pelo tid.
   (`fallback_category: null`). Nunca oferecer formulário genérico de DTU:
   campo errado = entrega no ID errado = prejuízo sem reembolso. Recusar o
   conteúdo, não o lote. Mapear categoria nova é editar `forms-map.json`.
-- **SKU sem regra em `sku_delivery_patterns` é RECUSADO nos dois tipos**
-  (`unknown_sku_delivery: "refuse"`), e SKU cujo tipo não bate com o cadastro
-  também. A recusa acontece **antes do claim** — cadastro errado não consome
-  voucher. É a trava que faltava no Brief 2 §8.2.
+- **SKU sem linha em `pv_sku_delivery_map` é RECUSADO nos dois tipos**, e SKU
+  cujo tipo não bate com o cadastro também. A recusa acontece **antes do
+  claim** — cadastro errado não consome voucher. É a trava que faltava no
+  Brief 2 §8.2. O mapa saiu do `forms-map.json` no Brief 6 porque catálogo é
+  dado operacional: `sku_pattern` é prefixo em CAIXA ALTA e o **match mais
+  longo ganha** (`FFBV` vence `FF` sem depender de ordem). Não existe mais
+  chave de "allow" — afrouxar exige mudar `lib/sku-map.mjs`, com revisão.
+- **Falha ao LER o catálogo é 503, nunca "segue sem o mapa".** Não há fallback
+  pro `forms-map.json`: duas fontes de verdade fariam o tipo de entrega de um
+  SKU mudar em silêncio durante um incidente.
+- **`requires_ip` é a única porta pelo qual o IP CRU sai daqui**, e só para o
+  fornecedor, no `end_user_ip_address` do create (caso Hoyoverse). Usa e
+  descarta: não vai pra log (o log registra o booleano, nunca o valor), não
+  tem coluna, e o proxy não loga corpo de request. No banco só existe o HMAC.
 - **Não logar código completo.** `codeLabel()` (4 chars + HMAC) é o único jeito
   de um código aparecer em log. O `attempt_ref` também não vai pra log: ele
   carrega o código inteiro dentro dele.
@@ -181,6 +195,10 @@ pelo tid.
 
 **Modo MVP (rápido):** copy, estilo, ajuste de layout, mapear categoria nova
 no `forms-map.json`, mensagem de erro do front.
+
+**Não é mais tarefa de código:** cadastrar SKU novo (jogo, denominação,
+mercado). É INSERT em `pv_sku_delivery_map` — ver o §5 da migration do Brief 6
+para o passo a passo e as armadilhas do prefixo.
 
 Atenção: **campo novo em `common_fields` não é MVP** — é coleta de dado
 pessoal. Passa por modo cuidado (finalidade, consentimento, o que vai pro log
@@ -203,7 +221,7 @@ outro repo), multi-idioma, reenvio de PIN por e-mail, carrinho, pagamento.
 ## 9. Comandos úteis
 
 ```bash
-npm test                     # 88 testes, Supabase e Lapak stubados
+npm test                     # 122 testes, Supabase e Lapak stubados
 npm run check:secrets        # secrets/SKU/credencial no bundle público
 node tests/dev-server.mjs    # harness local em :8000, functions reais
 ```
@@ -217,10 +235,16 @@ inclusive códigos que exercitam falha do fornecedor e timeout ambíguo.
   Netlify. Volta a responder manutenção e não toca em nada.
 - **App quebrado em produção:** `git revert HEAD && git push` (Netlify
   republica em ~30s). Nada aqui afeta loja, admin ou proxy.
-- **Todas as respostas 503:** provavelmente o rate limit não consegue gravar.
-  Checar se a migration `pv_validate_rate` está aplicada e se os RPCs
+- **Todas as respostas 503:** provavelmente o rate limit não consegue gravar,
+  ou a `pv_sku_delivery_map` não está legível. Checar se as migrations
+  `pv_validate_rate` e `pv-sku-delivery-map` estão aplicadas e se os RPCs
   `pv_validate_rate_hit` e `pv_redeem_claim` existem
   (`NOTIFY pgrst, 'reload schema';` se o PostgREST não estiver vendo).
+- **Tudo virou `invalid_or_unavailable` de uma vez, sem 503:** a
+  `pv_sku_delivery_map` está legível mas vazia (ou perdeu as linhas de FF).
+  É o fail-closed funcionando. `SELECT * FROM pv_sku_delivery_map;` e
+  re-rodar o seed do §3 da migration. Nenhum voucher foi queimado — a recusa
+  acontece antes do claim.
 - **Todas as respostas 500 `server_misconfigured`:** falta env var. O log da
   function diz qual.
 - **Voucher preso em PROCESSING:** a reconciliação resolve em até 20 min. Se

@@ -1,7 +1,7 @@
 {
   "_comment_1": "MAPA ESTÁTICO de formulários — Brief 2. Fica no SERVIDOR (importado pelas Netlify Functions); o front nunca lê este arquivo direto, ele recebe só os campos já resolvidos pelo /api/validate.",
-  "_comment_2": "MELHORIA JÁ REGISTRADA (futuro): as categories passam a ser alimentadas pelo campo `forms` do Get Categories da Lapak, via proxy com cache. Os common_fields são nossos e continuam aqui. Quando isso acontecer, o `variant` do catálogo (VOUCHER vs top-up) substitui o sku_delivery_patterns abaixo, que é a versão estática da mesma informação.",
-  "version": 3,
+  "_comment_2": "MELHORIA JÁ REGISTRADA (futuro): as categories passam a ser alimentadas pelo campo `forms` do Get Categories da Lapak, via proxy com cache. Os common_fields são nossos e continuam aqui.",
+  "version": 4,
 
   "_comment_3": "common_fields: pedidos em TODO resgate, DTU e PIN igual — são dados nossos (contato/antifraude), não da entrega. Ordem de renderização = ordem desta lista, com os checkboxes sempre no fim (ver forms.mjs).",
   "common_fields": [
@@ -65,27 +65,7 @@
   "_comment_7": "fallback_category = null é FAIL-CLOSED e é a decisão: SKU DTU que não casa com nenhum pattern acima é RECUSADO (não aparece na lista de conteúdos, e resgatá-lo direto devolve a mensagem genérica). Nunca cai em formulário genérico — pedir o campo errado entrega no lugar errado, e DTU não tem reembolso. A function loga o SKU com console.error pra a gente mapear. Pôr uma string aqui reabre o comportamento de fallback.",
   "fallback_category": null,
 
-  "_comment_8": "sku_delivery_patterns (Brief 3): qual é o tipo de entrega VERDADEIRO de um SKU, segundo a Lapak — independente do que foi cadastrado em pv_batch_contents.delivery_type. Existe por causa do achado do Brief 2 §8.2: o admin aceitou FFBV100-S22-br (um SKU de VOUCHER/PIN) cadastrado como DTU e nada reclamou. No Brief 2 isso só gerava formulário errado; no Brief 3 vira uma order errada com dinheiro real. Ordem importa, primeiro match ganha: ^FFBV precisa vir ANTES de ^FF, senão os vouchers Free Fire seriam classificados como top-up.",
-  "sku_delivery_patterns": [
-    {
-      "pattern": "^FFBV",
-      "delivery_type": "PIN",
-      "note": "Categoria FFBV = 'Voucher Free Fire Brazil', variant VOUCHER, forms:[] — entrega por PIN. Ex: FFBV100-S22-br."
-    },
-    {
-      "pattern": "^FFLATAM",
-      "delivery_type": "DTU",
-      "note": "Free Fire Latam EXCLUI Brasil (achado do A0). Mapeado só pra não cair no ^FF genérico; não usar em lote brasileiro — com check_id OFF cobra sem entregar."
-    },
-    {
-      "pattern": "^FF",
-      "delivery_type": "DTU",
-      "note": "Categoria FF = top-up Free Fire por ID do jogador. Ex: FF100_10-S116-br."
-    }
-  ],
+  "_comment_8": "MUDOU NO BRIEF 6: o mapa SKU → delivery_type saiu daqui e virou a tabela pv_sku_delivery_map (migrations/2026-08-19-pv-sku-delivery-map.sql). O que existia aqui era `sku_delivery_patterns`, uma lista ORDENADA de regex (^FFBV antes de ^FF). Motivo da mudança: catálogo é dado operacional, não código — a campanha da Plusmo (Minecraft e Roblox, MX, só PIN) exigiria um deploy por jogo novo. A semântica agora é prefixo em CAIXA ALTA com o match MAIS LONGO ganhando, e o fail-closed continua igual: SKU sem match é recusado com unmapped_delivery_sku. Não existe mais a chave `unknown_sku_delivery` — afrouxar exige mudar lib/sku-map.mjs, com revisão de código.",
 
-  "_comment_9": "unknown_sku_delivery = 'refuse' é FAIL-CLOSED e é a decisão do Brief 3: SKU que não casa com NENHUM pattern acima é recusado nos dois tipos, PIN inclusive, e o log sai como unmapped_delivery_sku. Custo: todo SKU novo precisa entrar nesta lista antes de ser vendido. Ganho: nenhuma order sai da nossa mão com o tipo de entrega não confirmado. Trocar por 'allow' reabre a porta do §8.2 — não faça isso sem o catálogo da Lapak conectado.",
-  "unknown_sku_delivery": "refuse",
-
-  "_comment_10": "EXTENSIBILIDADE (documentada, não implementada): categorias Hoyoverse (Genshin, Zenless, HSR) exigem `end_user_ip_address` no create da Lapak. Quando entrarem, a categoria ganha a flag `needs_end_user_ip: true` e o redeemer passa a mandar o IP CRU do portador nesse campo — o que é uma decisão de LGPD por si só (hoje só persistimos HMAC do IP, nunca o IP). Fora do piloto Free Fire."
+  "_comment_9": "A flag `requires_ip` (caso Hoyoverse: Genshin, Zenless, HSR, que exigem end_user_ip_address no create) também vive na tabela, por linha. Quando ligada, o redeemer manda o IP CRU do portador PARA O FORNECEDOR e mais nada — não vai pra log e não vai pro banco, onde só existe o HMAC do IP."
 }

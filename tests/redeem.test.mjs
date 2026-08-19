@@ -17,6 +17,8 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
+import { skuMapRows } from "./sku-map-fixture.mjs";
+
 process.env.SUPABASE_URL = "https://stub.supabase.co";
 process.env.SUPABASE_SECRET_KEY = "sb_secret_STUB_NAO_REAL";
 process.env.IP_HASH_SALT = "salt-de-teste-nao-real";
@@ -30,6 +32,7 @@ const CODE = "RLBK-VALIDO0001";
 const CONTENT_DTU = "11111111-1111-4111-8111-111111111111";
 const CONTENT_PIN = "22222222-2222-4222-8222-222222222222";
 const CONTENT_TROCADO = "33333333-3333-4333-8333-333333333333";
+const CONTENT_HOYO = "44444444-4444-4444-8444-444444444444";
 
 const VALID_EMAIL = "jogador@email.com";
 const VALID_CPF_DIGITS = "11144477735";
@@ -69,7 +72,19 @@ const contents = () => [
     delivery_type: "DTU",
     product_code: "FFBV100-S22-br",
   },
+  // Caso Hoyoverse (Brief 6): SKU cuja linha no catálogo tem
+  // requires_ip = true. PIN de propósito — um DTU esbarraria antes, na
+  // falta de categoria no forms-map.json.
+  {
+    id: CONTENT_HOYO,
+    display_label: "Cartão Genshin 60 Genesis Crystals",
+    delivery_type: "PIN",
+    product_code: "HOYOPIN60-mx",
+  },
 ];
+
+/** A linha de catálogo que liga o envio do IP. Não está no seed. */
+const HOYO_PIN_ROW = { sku_pattern: "HOYOPIN", delivery_type: "PIN", requires_ip: true };
 
 const db = {
   rate: 0,
@@ -77,6 +92,8 @@ const db = {
   attempts: [],
   calls: [],
   logs: [],
+  // Catálogo pv_sku_delivery_map (Brief 6), programável por teste.
+  skuMap: skuMapRows(),
   // Respostas programáveis do proxy.
   createResponse: null,
   statusResponse: null,
@@ -109,6 +126,7 @@ function resetDb() {
       },
     },
   ];
+  db.skuMap = skuMapRows();
   db.createResponse = {
     status: 200,
     ok: true,
@@ -159,6 +177,10 @@ globalThis.fetch = async (url, init = {}) => {
     voucher.status = "PROCESSING";
     const n = db.attempts.filter((a) => a.voucher_id === voucher.id).length + 1;
     return jsonResponse([{ voucher_id: voucher.id, attempt_number: n }]);
+  }
+
+  if (target.includes("/rest/v1/pv_sku_delivery_map")) {
+    return jsonResponse(db.skuMap);
   }
 
   if (target.includes("/rest/v1/pv_redeem_attempts")) {
@@ -834,4 +856,104 @@ test("convertCost sem cotação devolve nulos em vez de número inventado", () =
   const comFx = convertCost(16200, { fxUsdIdr: 16200, fxBrlUsd: 5 });
   assert.equal(comFx.cost_usd, 1);
   assert.equal(comFx.cost_brl, 5);
+});
+
+/* ============ requires_ip: o IP do portador no create (Brief 6) ===== */
+
+test("requires_ip=true põe end_user_ip_address no create; sem a flag, o campo nem existe", async () => {
+  // Free Fire (requires_ip false no seed): nada de IP no corpo.
+  await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  assert.deepEqual(db.createCalls[0], { count_order: 1, product_code: "FFBV100-S22-br" });
+  assert.equal("end_user_ip_address" in db.createCalls[0], false);
+
+  // Mesmo código, mesmo caminho, só a linha do catálogo muda.
+  resetDb();
+  db.skuMap = skuMapRows([HOYO_PIN_ROW]);
+  await callRedeem({
+    code: CODE,
+    content_id: CONTENT_HOYO,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  assert.deepEqual(db.createCalls[0], {
+    count_order: 1,
+    product_code: "HOYOPIN60-mx",
+    end_user_ip_address: "203.0.113.7",
+  });
+});
+
+test("o IP mandado pro fornecedor não aparece em log nem em coluna nossa", async () => {
+  db.skuMap = skuMapRows([HOYO_PIN_ROW]);
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_HOYO,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  // "usar e descartar": o IP existe no corpo da request ao fornecedor e em
+  // lugar nenhum mais.
+  const joined = db.logs.join("\n");
+  assert.ok(!joined.includes("203.0.113.7"), "IP cru no log");
+  // O log DIZ que o IP foi enviado — booleano, nunca o valor.
+  assert.ok(joined.includes('"requires_ip":true'), "faltou a marca de auditoria no log");
+
+  const persisted = JSON.stringify(db.attempts);
+  assert.ok(!persisted.includes("203.0.113.7"), "IP cru gravado no attempt");
+  assert.ok(db.attempts[0].ip_hash, "o ip_hash continua sendo gravado");
+  assert.notEqual(db.attempts[0].ip_hash, "203.0.113.7");
+});
+
+test("requires_ip não vaza entre SKUs do mesmo lote", async () => {
+  // Um lote com um SKU marcado não pode fazer os outros mandarem IP.
+  db.skuMap = skuMapRows([HOYO_PIN_ROW]);
+  await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  assert.equal("end_user_ip_address" in db.createCalls[0], false);
+});
+
+/* ====== regressão: os dois fluxos Free Fire com o catálogo em tabela ==== */
+
+test("regressão FF: DTU segue mandando user_id e PIN segue entregando o código", async () => {
+  // O critério de pronto do brief: nada do Brief 3 mudou de comportamento
+  // com a troca do forms-map.json pela tabela.
+  const dtu = await redeemDtu();
+  assert.equal(dtu.body.status, "processing");
+  assert.deepEqual(db.createCalls[0], {
+    count_order: 1,
+    product_code: "FF100_10-S116-br",
+    user_id: USER_ID,
+  });
+
+  resetDb();
+  const pin = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  assert.equal(pin.body.status, "processing");
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  const done = await callStatus({ code: CODE, attempt_ref: pin.body.attempt_ref });
+  assert.equal(done.body.status, "success");
+  assert.equal(done.body.delivery_type, "PIN");
+  assert.equal(done.body.pin, PIN_REAL);
+});
+
+test("SKU trocado continua recusado pela tabela (§8.2 do Brief 2, agora via banco)", async () => {
+  const { body } = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_TROCADO,
+    player_data: okPlayer(),
+  });
+  assert.equal(body.status, "invalid_or_unavailable");
+  assert.equal(db.createCalls.length, 0);
+  assert.equal(voucherByCode(CODE).status, "EMITIDO", "o voucher foi consumido à toa");
+  assert.ok(db.logs.join("\n").includes("sku_delivery_mismatch"));
 });

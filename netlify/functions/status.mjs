@@ -41,6 +41,7 @@ import {
 } from "../../lib/rate-limit.mjs";
 import { normalizeCode, isPlausibleCode } from "../../lib/vouchers.mjs";
 import { expectedDeliveryType } from "../../lib/forms.mjs";
+import { loadSkuMap } from "../../lib/sku-map.mjs";
 import { lapakConfig, orderStatus, LapakError, TERMINAL_ERROR_STATUS } from "../../lib/lapak.mjs";
 import {
   findAttempt,
@@ -145,7 +146,25 @@ export default async (req, context) => {
     return json(200, GENERIC_INVALID, cors);
   }
 
-  const delivery = expectedDeliveryType(attempt.product_code) || "DTU";
+  // Mesmo catálogo do redeemer (Brief 6). Aqui ele não decide order
+  // nenhuma — só se a tela vai exibir PIN. Falha de leitura vira 503, como
+  // qualquer outra falha de Supabase deste endpoint: o polling volta na
+  // próxima batida e nenhum estado se perde.
+  let skuMap;
+  try {
+    skuMap = await loadSkuMap(cfg);
+  } catch (err) {
+    if (err instanceof UpstreamError) {
+      console.error(`[status] sku map indisponível code=${label} ${err.message}`);
+      return json(503, { error: "temporarily_unavailable" }, cors);
+    }
+    throw err;
+  }
+
+  // `|| "DTU"` é o conservador: SKU que sumiu do catálogo entre o resgate e
+  // a consulta não vira "mostra o PIN". Sem PIN na tela o portador recorre
+  // ao suporte; com PIN errado na tela, não há volta.
+  const delivery = expectedDeliveryType(attempt.product_code, skuMap) || "DTU";
   const logBase = { evt: "status", code: label, attempt: attempt.attempt_number, delivery_type: delivery };
 
   // Já fracassou: o voucher já foi devolvido pelo redeem (ou pela

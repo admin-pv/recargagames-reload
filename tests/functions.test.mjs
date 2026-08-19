@@ -15,6 +15,8 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
+import { skuMapRows, PLUSMO_ROW } from "./sku-map-fixture.mjs";
+
 process.env.SUPABASE_URL = "https://stub.supabase.co";
 process.env.SUPABASE_SECRET_KEY = "sb_secret_STUB_NAO_REAL";
 process.env.IP_HASH_SALT = "salt-de-teste-nao-real";
@@ -98,7 +100,17 @@ const VOUCHERS = {
   },
 };
 
-const db = { attempts: 0, rateFails: false, calls: [], logs: [], attemptWrites: [] };
+const db = {
+  attempts: 0,
+  rateFails: false,
+  calls: [],
+  logs: [],
+  attemptWrites: [],
+  // Catálogo pv_sku_delivery_map (Brief 6). Programável: `null` simula a
+  // leitura falhando, que tem que virar 503 e não "segue sem o mapa".
+  skuMap: skuMapRows(),
+  skuMapFails: false,
+};
 
 function jsonResponse(value) {
   return new Response(JSON.stringify(value), {
@@ -121,6 +133,10 @@ globalThis.fetch = async (url, init = {}) => {
   // corrida. A matriz do claim está em redeem.test.mjs.
   if (target.includes("/rpc/pv_redeem_claim")) {
     return jsonResponse([{ voucher_id: "voucher-stub", attempt_number: 1 }]);
+  }
+  if (target.includes("/rest/v1/pv_sku_delivery_map")) {
+    if (db.skuMapFails) return new Response("db down", { status: 500 });
+    return jsonResponse(db.skuMap);
   }
   if (target.includes("/rest/v1/pv_redeem_attempts")) {
     db.attemptWrites.push({ method, body: init.body ? JSON.parse(init.body) : null });
@@ -187,6 +203,8 @@ beforeEach(() => {
   db.calls = [];
   db.logs = [];
   db.attemptWrites = [];
+  db.skuMap = skuMapRows();
+  db.skuMapFails = false;
 });
 
 /* ------------------------- /api/validate -------------------------- */
@@ -686,4 +704,118 @@ test("REDEEM_ENABLED=false devolve manutenção sem tocar em nada", async () => 
   } finally {
     delete process.env.REDEEM_ENABLED;
   }
+});
+
+/* ============ catálogo pv_sku_delivery_map (Brief 6) ============== */
+
+test("catálogo em tabela: SKU do seed continua resolvendo nas duas portas", async () => {
+  // Regressão do Brief 3 atravessando a mudança de fonte: o mapa saiu do
+  // forms-map.json e virou SELECT, e FFBV/FF têm que responder igual.
+  const { body } = await callValidate({ code: "RLBK-VALIDO0001" });
+  assert.equal(body.valid, true);
+  assert.deepEqual(
+    body.contents.map((c) => c.delivery_type).sort(),
+    ["DTU", "PIN"]
+  );
+  assert.ok(db.calls.some((c) => c.includes("pv_sku_delivery_map")), "o catálogo foi lido");
+
+  const redeemed = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    player_data: okPlayer(),
+  });
+  assert.equal(redeemed.body.status, "processing");
+});
+
+test("SKU inventado, ausente da tabela → unmapped_delivery_sku, voucher intacto", async () => {
+  // O critério de pronto do brief. MLBB não está no catálogo: recusa antes
+  // do claim, sem order e sem consumir o voucher.
+  const { res, body } = await callRedeem({
+    code: "RLBK-SOSKUNOVO1",
+    content_id: CONTENT_UNMAPPED,
+    player_data: okPlayer(),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(body.status, "invalid_or_unavailable");
+  assert.ok(!db.calls.some((c) => c.includes("pv_redeem_claim")), "não travou o voucher");
+  assert.ok(!db.calls.some((c) => c.includes("/api/order")), "não chamou a Lapak");
+  assert.ok(db.logs.some((l) => l.includes("unmapped_delivery_sku")), "o motivo foi logado");
+});
+
+test("cadastrar o SKU na tabela destrava o resgate — sem deploy", async () => {
+  // O ponto inteiro do brief: a mesma request que falhou acima passa
+  // depois de UMA linha nova no catálogo. Nada de código mudou entre as
+  // duas — é o cenário da campanha Plusmo.
+  const plusmoContent = "55555555-5555-4555-8555-555555555555";
+  VOUCHERS["RLBK-PLUSMO0001"] = {
+    id: "v10",
+    status: "EMITIDO",
+    batch: batch({
+      contents: [
+        {
+          id: plusmoContent,
+          display_label: "Minecraft 500 Minecoins",
+          delivery_type: "PIN",
+          product_code: "MCPIN500-mx",
+        },
+      ],
+    }),
+  };
+
+  const antes = await callValidate({ code: "RLBK-PLUSMO0001" });
+  assert.equal(antes.body.valid, false, "sem a linha no catálogo, recusado");
+
+  db.skuMap = skuMapRows([PLUSMO_ROW]);
+
+  const depois = await callValidate({ code: "RLBK-PLUSMO0001" });
+  assert.equal(depois.body.valid, true);
+  assert.equal(depois.body.contents[0].delivery_type, "PIN");
+  // PIN não pede dado de entrega: só os campos comuns.
+  assert.deepEqual(
+    depois.body.contents[0].fields.map((f) => f.field),
+    ["email", "cpf", "marketing_optin"]
+  );
+});
+
+test("catálogo ilegível é 503 nas duas portas — nunca 'segue sem o mapa'", async () => {
+  db.skuMapFails = true;
+
+  const validated = await callValidate({ code: "RLBK-VALIDO0001" });
+  assert.equal(validated.res.status, 503);
+  assert.equal(validated.body.error, "temporarily_unavailable");
+
+  db.calls = [];
+  const redeemed = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_DTU,
+    player_data: okPlayer(),
+  });
+  assert.equal(redeemed.res.status, 503);
+  // O que mais importa: falhou ANTES do claim, então o voucher não foi
+  // consumido por um problema de infraestrutura nosso.
+  assert.ok(!db.calls.some((c) => c.includes("pv_redeem_claim")));
+  assert.ok(!db.calls.some((c) => c.includes("/api/order")));
+});
+
+test("catálogo vazio recusa tudo em vez de adivinhar", async () => {
+  // O cenário "código subiu antes da migration". Fail-closed: o app fica
+  // inútil, mas não entrega nada no tipo errado.
+  db.skuMap = [];
+
+  const { body } = await callValidate({ code: "RLBK-VALIDO0001" });
+  assert.equal(body.valid, false);
+  assert.equal(body.reason, "invalid_or_unavailable");
+
+  const redeemed = await callRedeem({
+    code: "RLBK-VALIDO0001",
+    content_id: CONTENT_PIN,
+    player_data: okPlayer(),
+  });
+  assert.equal(redeemed.body.status, "invalid_or_unavailable");
+  assert.ok(!db.calls.some((c) => c.includes("/api/order")));
+});
+
+test("o catálogo não é lido para código inválido — sondar não custa banco extra", async () => {
+  await callValidate({ code: "RLBK-NAOEXISTE1" });
+  assert.ok(!db.calls.some((c) => c.includes("pv_sku_delivery_map")));
 });

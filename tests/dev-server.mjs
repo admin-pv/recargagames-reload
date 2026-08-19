@@ -44,6 +44,15 @@ const FAKE_SERIAL = "791000111";
 const future = new Date(Date.now() + 30 * 86400000).toISOString();
 const past = new Date(Date.now() - 2 * 86400000).toISOString();
 
+// Catálogo pv_sku_delivery_map (Brief 6). O mesmo seed da migration: no
+// harness ele é constante, porque quem se mexe aqui é a tela, não o
+// catálogo. Para simular SKU novo, acrescente uma linha e reinicie.
+const SKU_DELIVERY_MAP = [
+  { sku_pattern: "FFBV", delivery_type: "PIN", requires_ip: false },
+  { sku_pattern: "FFLATAM", delivery_type: "DTU", requires_ip: false },
+  { sku_pattern: "FF", delivery_type: "DTU", requires_ip: false },
+];
+
 const contents = () => [
   {
     id: "11111111-1111-4111-8111-111111111111",
@@ -182,6 +191,10 @@ globalThis.fetch = async (url, init = {}) => {
     voucher.status = "PROCESSING";
     const n = store.attempts.filter((a) => a.voucher_id === voucher.id).length + 1;
     return jsonRes([{ voucher_id: voucher.id, attempt_number: n }]);
+  }
+
+  if (target.includes("/rest/v1/pv_sku_delivery_map")) {
+    return jsonRes(SKU_DELIVERY_MAP);
   }
 
   if (target.includes("/rest/v1/pv_redeem_attempts")) {

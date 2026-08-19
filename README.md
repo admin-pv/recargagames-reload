@@ -44,9 +44,10 @@ lib/                    módulos server-side (fora de functions/ de propósito)
   rate-limit.mjs        contador por IP em pv_validate_rate (2 baldes)
   vouchers.mjs          busca + avaliação de voucher (SÓ LEITURA)
   forms.mjs             SKU → categoria → campos, trava SKU × tipo, validação
+  sku-map.mjs           catálogo SKU → PIN/DTU, lido de pv_sku_delivery_map
   redeem.mjs            claim atômico, trilha de tentativas, fechamento
   lapak.mjs             cliente do proxy: create, order_status, parsing do PIN
-forms-map.json          mapa estático de formulários e de tipo de entrega
+forms-map.json          mapa estático de formulários (o tipo de entrega saiu daqui)
 migrations/             SQL aplicado manualmente no Supabase
 tests/                  suíte com Supabase e Lapak stubados + harness local
 ```
@@ -199,9 +200,12 @@ pro `player_data` do voucher. O IP cru não é gravado em lugar nenhum.
   isso o catálogo do parceiro seria enumerável.
 - **Trava SKU × delivery_type.** O admin não valida se o SKU cadastrado é mesmo
   do tipo declarado — um lote de teste já teve SKU de voucher cadastrado como
-  DTU. `sku_delivery_patterns` no `forms-map.json` decide o tipo verdadeiro, e
-  SKU sem regra é **recusado nos dois tipos** (`unknown_sku_delivery: refuse`).
-  A recusa acontece antes do claim: cadastro errado não consome voucher.
+  DTU. Quem decide o tipo verdadeiro é a tabela **`pv_sku_delivery_map`**
+  (Brief 6): `sku_pattern` é prefixo em caixa alta e o **match mais longo
+  ganha**, então `FFBV` vence `FF` sem depender de ordem. SKU sem linha é
+  **recusado nos dois tipos**, PIN inclusive, e a recusa acontece antes do
+  claim: cadastro errado não consome voucher. Cadastrar jogo novo é um INSERT,
+  não um deploy.
 - **SKU DTU fora do `forms-map.json` é recusado** (`fallback_category: null`),
   não cai em formulário genérico. Recusa o conteúdo, não o lote.
 - **Rate limit é fail-closed** e tem dois baldes: 10/IP/10min pro

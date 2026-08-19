@@ -55,6 +55,7 @@ import {
   evaluateVoucher,
 } from "../../lib/vouchers.mjs";
 import { fieldsForContent, validatePlayerData } from "../../lib/forms.mjs";
+import { loadSkuMap } from "../../lib/sku-map.mjs";
 import { lapakConfig, redeemEnabled, createOrder, convertCost, LapakError } from "../../lib/lapak.mjs";
 import {
   claimVoucher,
@@ -111,12 +112,19 @@ export default async (req, context) => {
 
   const nowMs = Date.now();
 
+  // IP CRU do portador. Ele já existia aqui em duas formas de uso (balde do
+  // rate limit e ip_hash do attempt); agora tem uma terceira, o
+  // end_user_ip_address dos SKUs com requires_ip. Fica numa const só pra
+  // ficar visível que é UM dado pessoal com três destinos — e que nenhum
+  // deles é log nem coluna em claro.
+  const rawIp = clientIp(req, context);
+
   // Mesmo balde de rate limit do /api/validate, de propósito: sem isso o
   // redeem seria o mesmo oráculo de código por outra porta. Um resgate
   // legítimo gasta 2 tentativas do teto de 10 — sobra folga.
   let rate;
   try {
-    rate = await hitRateLimit(cfg, clientIp(req, context), nowMs);
+    rate = await hitRateLimit(cfg, rawIp, nowMs);
   } catch (err) {
     console.error(`[redeem] rate limiter unavailable: ${err.message}`);
     return json(503, { error: "temporarily_unavailable" }, cors);
@@ -168,6 +176,21 @@ export default async (req, context) => {
     return json(200, { status: "invalid_or_unavailable" }, cors);
   }
 
+  // Catálogo de tipo de entrega (Brief 6). Carregado depois do veredito do
+  // voucher e ANTES do claim: falha de leitura vira 503 com o voucher
+  // intacto, e quem varre códigos inválidos não ganha leitura extra de
+  // banco por tentativa.
+  let skuMap;
+  try {
+    skuMap = await loadSkuMap(cfg);
+  } catch (err) {
+    if (err instanceof UpstreamError) {
+      console.error(`[redeem] sku map indisponível code=${label} ${err.message}`);
+      return json(503, { error: "temporarily_unavailable" }, cors);
+    }
+    throw err;
+  }
+
   // Espelha o fail-closed do /api/validate — e agora carrega junto a trava
   // SKU × delivery_type. Recusa ANTES do flip: um conteúdo mal cadastrado
   // não pode nem consumir o voucher, quanto mais virar order.
@@ -177,7 +200,7 @@ export default async (req, context) => {
   // portador — mas ele vê a mensagem genérica. Por isso o console.error
   // com o SKU: é o único jeito de o suporte distinguir "digitou errado"
   // de "nosso lote está furado" (lição do Brief 2 §8.3).
-  const form = fieldsForContent(content);
+  const form = fieldsForContent(content, skuMap);
   if (!form.ok) {
     console.error(
       `[redeem] ${form.reason}: conteúdo recusado, sku=${content.product_code} ` +
@@ -245,7 +268,7 @@ export default async (req, context) => {
       code,
       productCode: content.product_code,
       clean: checked.clean,
-      ipHash: ipHash(clientIp(req, context), cfg.salt),
+      ipHash: ipHash(rawIp, cfg.salt),
     });
   } catch (err) {
     // Nenhuma order saiu: devolver o voucher é seguro e obrigatório.
@@ -266,14 +289,24 @@ export default async (req, context) => {
   // ---------------- A ÚNICA CHAMADA QUE GASTA DINHEIRO ----------------
   // `fields` são só os NOMES dos campos preenchidos. Valor de email, CPF e
   // user_id não entra em log em nenhuma hipótese — nem o attempt_ref, que
-  // carrega o código completo dentro dele.
-  logEvent({ ...logBase, result: "order_create", fields: Object.keys(checked.clean) });
+  // carrega o código completo dentro dele. `requires_ip` é boolean: diz que
+  // o IP foi enviado, nunca qual.
+  logEvent({
+    ...logBase,
+    result: "order_create",
+    fields: Object.keys(checked.clean),
+    requires_ip: form.requiresIp,
+  });
 
   let order;
   try {
     order = await createOrder(lapak, {
       productCode: content.product_code,
       userId: content.delivery_type === "PIN" ? null : checked.clean.user_id,
+      // Só os SKUs marcados com requires_ip na pv_sku_delivery_map (caso
+      // Hoyoverse) levam o IP cru. Usa e descarta: o valor morre no corpo
+      // desta request. O que fica gravado é o ip_hash do attempt.
+      endUserIp: form.requiresIp ? rawIp : null,
     });
   } catch (err) {
     if (!(err instanceof LapakError)) throw err;
