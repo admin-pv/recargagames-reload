@@ -15,7 +15,9 @@ import {
   welcomeEmail,
   pinEmail,
   resolveLocale,
+  resolveSiteHost,
   DEFAULT_LOCALE,
+  DEFAULT_SITE_HOST,
 } from "../lib/email-templates.mjs";
 import { sendEmail, recipientDomain, mailerEnabled, FROM_ADDRESS } from "../lib/mailer.mjs";
 
@@ -209,4 +211,67 @@ test("recipientDomain devolve só o domínio — nunca o endereço", () => {
 test("remetente é a caixa não monitorada decidida no brief", () => {
   assert.match(FROM_ADDRESS, /no-reply@recargagames\.com/);
   assert.match(FROM_ADDRESS, /Recarga Games/);
+});
+
+/* ------------- hostname do parceiro nos links (Brief 5) ------------- */
+
+test("nenhum template tem hostname fixo — o link vem do parceiro", () => {
+  const host = "canje.plusmo.mx";
+  for (const mail of [
+    welcomeEmail({ locale: "es-MX", siteHost: host }),
+    pinEmail({ locale: "es-MX", siteHost: host, pin: PIN }),
+  ]) {
+    assert.ok(mail.html.includes(`https://${host}`), "link do parceiro ausente no HTML");
+    assert.ok(mail.text.includes(`https://${host}`), "link do parceiro ausente no text");
+    assert.ok(
+      !mail.html.includes("reload.recargagames.com"),
+      "sobrou link fixo do reload no email de outro parceiro"
+    );
+    assert.ok(!mail.text.includes("reload.recargagames.com"));
+  }
+});
+
+test("branding visual continua Recarga Games para todo parceiro", () => {
+  // O que muda é o DESTINO do link, não a marca.
+  const mail = pinEmail({ locale: "es-MX", siteHost: "canje.plusmo.mx", pin: PIN });
+  assert.ok(mail.html.includes("RECARGA"), "perdeu o logo");
+  assert.ok(mail.html.includes("GAMES"));
+  assert.ok(mail.html.includes("RECARGA. JUEGA MÁS."), "perdeu a tagline");
+});
+
+test("sem hostname, cai no reload — o default do brief", () => {
+  for (const mail of [welcomeEmail({}), pinEmail({ pin: PIN })]) {
+    assert.ok(mail.html.includes(`https://${DEFAULT_SITE_HOST}`));
+  }
+  assert.equal(DEFAULT_SITE_HOST, "reload.recargagames.com");
+});
+
+test("hostname malformado NUNCA vira href — cai no default", () => {
+  // Esta é a defesa contra link de phishing assinado com o nosso DKIM.
+  // O CHECK da migration barra na escrita; isto é a segunda camada.
+  const perigosos = [
+    'evil.com" onclick="alert(1)',
+    "https://evil.com",
+    "evil.com/path",
+    "evil.com:8080",
+    "javascript:alert(1)",
+    "evil com",
+    "",
+    null,
+    undefined,
+    "  ",
+    "-comeca-com-hifen.com",
+  ];
+  for (const host of perigosos) {
+    assert.equal(resolveSiteHost(host), DEFAULT_SITE_HOST, `passou: ${host}`);
+    const mail = pinEmail({ pin: PIN, siteHost: host });
+    assert.ok(!mail.html.includes("evil.com"), `evil.com entrou no HTML via ${host}`);
+    assert.ok(!mail.html.includes("javascript:"), "esquema javascript: no href");
+  }
+});
+
+test("hostname válido é aceito e normalizado para minúsculas", () => {
+  assert.equal(resolveSiteHost("canje.plusmo.mx"), "canje.plusmo.mx");
+  assert.equal(resolveSiteHost("  Canje.Plusmo.MX  "), "canje.plusmo.mx");
+  assert.equal(resolveSiteHost("reload.recargagames.com"), "reload.recargagames.com");
 });

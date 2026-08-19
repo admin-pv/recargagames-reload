@@ -52,7 +52,7 @@ reconciliação. Ver §5.
 | Banco | Supabase `ashmirzgyuhspymldpfv`, tabelas `pv_*` (Brief 1) + `pv_validate_rate` |
 | Fornecedor | Lapak **só** via proxy `api.recargagames.com`, com `PROXY_RELOAD_KEY` |
 | Host | Netlify, site próprio, CD por push na `main` |
-| Email | **Resend**, domínio `recargagames.com`. Remetente `no-reply@`. |
+| Email | **Resend**, domínio `recargagames.com`. Remetente `no-reply@`. Branding sempre Recarga Games; os **links** saem do `site_host` do lote. |
 | Deps | **zero** em produção. `package.json` existe só pelos scripts de teste. |
 
 ### Stack a evitar
@@ -88,8 +88,8 @@ SKU → tipo de entrega, em `migrations/2026-08-19-pv-sku-delivery-map.sql`
 **escreve** — CRUD pelo painel ainda não existe (Brief 4); até lá, INSERT no
 SQL Editor.
 
-Do Brief 5, em `migrations/2026-08-19-pv-emails.sql`: `pv_batches.locale`
-(idioma dos emails do lote), `pv_vouchers.welcome_email_at` (trava do envio de
+Do Brief 5, em `migrations/2026-08-19-pv-emails.sql`: `pv_batches.locale` e
+`pv_batches.site_host` (idioma e hostname do parceiro nos emails do lote), `pv_vouchers.welcome_email_at` (trava do envio de
 boas-vindas) e `pv_redeem_attempts.pin_email_due` / `pin_email_at` (fila e
 auditoria do email de PIN).
 
@@ -203,6 +203,11 @@ cortesia. Se algum dia um `throw` escapar de lá, é bug de severidade alta.
   o **domínio** (`recipientDomain()`), que responde "está falhando só num
   provedor?" sem identificar ninguém. O corpo de erro da Resend não é lido: em
   422 ela ecoa o destinatário de volta.
+- **URL de email nunca vem do header `Host`.** Ela sai de
+  `pv_batches.site_host`, que é dado de admin. O `/api/redeem` aceita request
+  sem `Origin`, então um `Host` forjado colocaria um link de phishing dentro de
+  um email assinado com o nosso DKIM. Há `CHECK` na coluna e revalidação em
+  `resolveSiteHost()` — hostname malformado cai no default, nunca vira `href`.
 - **`RESEND_API_KEY` só em env var do Netlify**, e **por contexto**: rotacionar
   exige trocar em Production **e** em Deploy Previews, separadamente.
 - **Email transacional não depende de `marketing_optin`.** O optin governa só
@@ -245,7 +250,7 @@ outro repo), multi-idioma, reenvio de PIN por e-mail, carrinho, pagamento.
 ## 9. Comandos úteis
 
 ```bash
-npm test                     # 147 testes, Supabase, Lapak e Resend stubados
+npm test                     # 154 testes, Supabase, Lapak e Resend stubados
 npm run check:secrets        # secrets/SKU/credencial no bundle público
 node tests/dev-server.mjs    # harness local em :8000, functions reais
 ```

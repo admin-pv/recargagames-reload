@@ -55,6 +55,45 @@ COMMENT ON COLUMN public.pv_batches.locale IS
 
 
 -- ---------------------------------------------------------------------
+-- 1b) pv_batches.site_host — o hostname do parceiro, para os links.
+--
+--    O branding VISUAL dos emails é Recarga Games para todo mundo. O que
+--    varia é o destino dos links: um resgate do lote da Plusmo não pode
+--    mandar o portador para reload.recargagames.com, que é um site que
+--    ele nunca viu.
+--
+--    POR QUE ISTO VEM DO BANCO E NÃO DO REQUEST: seria natural usar o
+--    Host da requisição — é literalmente "de onde veio o resgate". Mas
+--    esse header é controlado por quem chama, e o /api/redeem aceita
+--    request sem Origin (curl). Um `Host: evil.com` forjado colocaria um
+--    link para evil.com dentro de um email assinado com o NOSSO DKIM.
+--    Injeção de Host em link de email é vetor conhecido de phishing.
+--    Vindo do lote, o valor é escrito por admin e nunca pelo visitante.
+--
+--    CHECK de formato: só hostname. Sem esquema, sem barra, sem espaço,
+--    sem aspas — nada que possa escapar do atributo href no template.
+--    O código valida de novo (defesa em profundidade), mas a primeira
+--    barreira é aqui, onde o dado entra.
+-- ---------------------------------------------------------------------
+ALTER TABLE public.pv_batches
+  ADD COLUMN IF NOT EXISTS site_host text NOT NULL DEFAULT 'reload.recargagames.com';
+
+DO $$
+BEGIN
+  ALTER TABLE public.pv_batches
+    ADD CONSTRAINT pv_batches_site_host_chk
+      CHECK (site_host ~ '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' AND length(site_host) BETWEEN 4 AND 253);
+EXCEPTION
+  WHEN duplicate_object THEN NULL;  -- já aplicada
+END $$;
+
+COMMENT ON COLUMN public.pv_batches.site_host IS
+  'Brief 5. Hostname do parceiro, usado nos LINKS dos emails (o branding '
+  'visual segue Recarga Games para todos). Vem do banco e nunca do header '
+  'Host, que e controlado por quem chama.';
+
+
+-- ---------------------------------------------------------------------
 -- 2) pv_vouchers.welcome_email_at — boas-vindas, UMA VEZ POR VOUCHER.
 --
 --    A coluna fica no VOUCHER, e não no attempt, de propósito. O brief
@@ -119,6 +158,7 @@ COMMENT ON COLUMN public.pv_redeem_attempts.pin_email_due IS
 --      WHERE table_schema = 'public'
 --        AND (table_name, column_name) IN (
 --              ('pv_batches','locale'),
+--              ('pv_batches','site_host'),
 --              ('pv_vouchers','welcome_email_at'),
 --              ('pv_redeem_attempts','pin_email_due'),
 --              ('pv_redeem_attempts','pin_email_at'))
@@ -126,9 +166,10 @@ COMMENT ON COLUMN public.pv_redeem_attempts.pin_email_due IS
 --     -- esperado: locale NOT NULL default 'pt-BR'; pin_email_due NOT NULL
 --     --           default false; os dois timestamptz nullable.
 --
--- Teste 2 — lote existente ganhou o default, nenhum ficou nulo:
---     SELECT locale, count(*) FROM public.pv_batches GROUP BY locale;
---     -- esperado: todos em 'pt-BR'
+-- Teste 2 — lote existente ganhou os defaults, nenhum ficou nulo:
+--     SELECT locale, site_host, count(*)
+--       FROM public.pv_batches GROUP BY locale, site_host;
+--     -- esperado: todos em 'pt-BR' / 'reload.recargagames.com'
 --
 -- Teste 3 — o CHECK barra idioma sem tradução:
 --     BEGIN;
@@ -141,8 +182,25 @@ COMMENT ON COLUMN public.pv_redeem_attempts.pin_email_due IS
 --     SELECT count(*) AS deve_ser_zero
 --       FROM public.pv_redeem_attempts WHERE pin_email_due;
 --
--- Teste 5 — marcar um lote como es-MX (a campanha Plusmo, quando existir):
---     UPDATE public.pv_batches SET locale = 'es-MX' WHERE name = '<nome do lote>';
+-- Teste 5 — o CHECK de site_host barra o que não é hostname:
+--     BEGIN;
+--       UPDATE public.pv_batches SET site_host = 'https://plusmo.mx/'
+--        WHERE id = (SELECT id FROM public.pv_batches LIMIT 1);
+--     ROLLBACK;
+--     -- esperado: ERROR 23514 pv_batches_site_host_chk (esquema e barra)
+--
+--     BEGIN;
+--       UPDATE public.pv_batches SET site_host = 'evil.com" onclick="x'
+--        WHERE id = (SELECT id FROM public.pv_batches LIMIT 1);
+--     ROLLBACK;
+--     -- esperado: ERROR 23514 — é o que impede escapar do href no template
+--
+-- Teste 6 — configurar a campanha Plusmo (quando o lote existir):
+--     UPDATE public.pv_batches
+--        SET locale = 'es-MX', site_host = '<hostname da Plusmo>'
+--      WHERE name = '<nome do lote>';
+--     -- Os emails passam a sair em espanhol e com os links do parceiro,
+--     -- mantendo o branding visual Recarga Games.
 -- =====================================================================
 
 
@@ -162,5 +220,7 @@ COMMENT ON COLUMN public.pv_redeem_attempts.pin_email_due IS
 --   DROP COLUMN IF EXISTS pin_email_at;
 -- ALTER TABLE public.pv_vouchers  DROP COLUMN IF EXISTS welcome_email_at;
 -- ALTER TABLE public.pv_batches   DROP CONSTRAINT IF EXISTS pv_batches_locale_chk;
+-- ALTER TABLE public.pv_batches   DROP CONSTRAINT IF EXISTS pv_batches_site_host_chk;
 -- ALTER TABLE public.pv_batches   DROP COLUMN IF EXISTS locale;
+-- ALTER TABLE public.pv_batches   DROP COLUMN IF EXISTS site_host;
 -- =====================================================================

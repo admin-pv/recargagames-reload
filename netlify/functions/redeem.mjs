@@ -303,6 +303,7 @@ export default async (req, context) => {
     voucherId: claim.voucherId,
     email: checked.clean.email,
     locale: verdict.batch.locale,
+    siteHost: verdict.batch.site_host,
     label,
   });
 

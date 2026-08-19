@@ -280,6 +280,7 @@ async function settleSuccess(cfg, attempt, result, { cors, logBase, delivery }) 
       attemptId: attempt.id,
       email: attempt.email,
       locale: attempt.voucher?.batch?.locale,
+      siteHost: attempt.voucher?.batch?.site_host,
       pin,
       serial: result.serial,
       label: logBase.code,

@@ -126,6 +126,7 @@ function resetDb() {
         name: "Lote Teste Reload",
         status: "active",
         locale: "pt-BR",
+        site_host: "reload.recargagames.com",
         expires_at: new Date(Date.now() + 30 * 86400000).toISOString(),
         contents: contents(),
       },
@@ -232,7 +233,14 @@ globalThis.fetch = async (url, init = {}) => {
             return {
               ...a,
               voucher: voucher
-                ? { id: voucher.id, code: voucher.code, batch: { locale: voucher.batch?.locale } }
+                ? {
+                    id: voucher.id,
+                    code: voucher.code,
+                    batch: {
+                      locale: voucher.batch?.locale,
+                      site_host: voucher.batch?.site_host,
+                    },
+                  }
                 : null,
             };
           })
@@ -253,7 +261,10 @@ globalThis.fetch = async (url, init = {}) => {
               code: voucher.code,
               status: voucher.status,
               redeemed_at: voucher.redeemed_at,
-              batch: { locale: voucher.batch?.locale ?? "pt-BR" },
+              batch: {
+                locale: voucher.batch?.locale ?? "pt-BR",
+                site_host: voucher.batch?.site_host,
+              },
             }
           : null,
       },
@@ -288,7 +299,7 @@ globalThis.fetch = async (url, init = {}) => {
             status: v.status,
             // PROCESSING_SELECT passou a embutir o lote (Brief 5): o job
             // precisa do locale pra montar o email no idioma certo.
-            batch: { locale: v.batch?.locale ?? "pt-BR" },
+            batch: { locale: v.batch?.locale ?? "pt-BR", site_host: v.batch?.site_host },
             attempts: db.attempts.filter((a) => a.voucher_id === v.id),
           }))
       );
@@ -1230,4 +1241,41 @@ test("reconciliação de DTU não manda email de PIN", async () => {
 
   assert.equal(voucherByCode(CODE).status, "USADO");
   assert.equal(db.emails.length, 0);
+});
+
+test("o hostname do parceiro atravessa do lote até o link do email", async () => {
+  // Cenário do Brief 7: lote da Plusmo, mercado MX. O portador nunca viu
+  // reload.recargagames.com e não pode ser mandado pra lá.
+  const voucher = voucherByCode(CODE);
+  voucher.batch.locale = "es-MX";
+  voucher.batch.site_host = "canje.plusmo.mx";
+
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  assert.equal(db.emails.length, 2, "esperado boas-vindas + PIN");
+  for (const mail of db.emails) {
+    assert.ok(mail.html.includes("https://canje.plusmo.mx"), "link do parceiro ausente");
+    assert.ok(
+      !mail.html.includes("reload.recargagames.com"),
+      "mandou o portador da Plusmo pro site do reload"
+    );
+    // Marca continua sendo a nossa nos dois.
+    assert.ok(mail.html.includes("RECARGA. JUEGA MÁS."));
+  }
+});
+
+test("lote sem site_host usa o reload — default preservado", async () => {
+  const voucher = voucherByCode(CODE);
+  delete voucher.batch.site_host;
+
+  await redeemDtu();
+
+  assert.equal(db.emails.length, 1);
+  assert.ok(db.emails[0].html.includes("https://reload.recargagames.com"));
 });
