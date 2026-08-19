@@ -17,10 +17,12 @@
 - **O fail-closed não afrouxou em lugar nenhum** — ficou mais estrito em dois
   pontos (§3).
 - **Gasto: zero.** Nenhuma order foi criada nesta sessão. Os dois critérios de
-  pronto foram provados sem tocar em dinheiro (§6).
+  pronto foram provados sem tocar em dinheiro (§7).
 - Migration `2026-08-19-pv-sku-delivery-map.sql` aplicada e conferida **antes**
   do merge, com a resolução do Free Fire provada em SQL.
 - **122 testes** (+24), `check:secrets` limpo.
+- **Brief 5 destravado do lado da infra** (§10): domínio verificado no Resend e
+  `RESEND_API_KEY` no Netlify. Nenhum código de email foi escrito.
 
 ---
 
@@ -239,7 +241,36 @@ fail-closed funcionando; re-rodar o seed do §3 da migration.
 
 ---
 
-## 10. Fechamento
+## 10. Preparação do Brief 5 (emails) — infra, sem código
+
+Nada do Brief 5 foi construído nesta sessão. O que ficou pronto é a infra que
+ele vai precisar:
+
+- **Domínio `Verified` no Resend.**
+- **`RESEND_API_KEY` cadastrada no Netlify.** Entra na lista de secrets que
+  vivem **só** em env var do painel, junto de `SUPABASE_SECRET_KEY`,
+  `IP_HASH_SALT` e `PROXY_RELOAD_KEY`. Nunca no repo, nunca no front.
+
+**A armadilha, registrada agora para não custar caro depois:** no plano Free do
+Resend a key é *secret* e **por contexto**. Rotacionar não é trocar em um lugar
+— exige trocar em **Production E em Deploy Previews, separadamente**. Esquecer o
+preview significa preview rodando com key revogada, e a falha aparece no
+ambiente onde justamente se testa antes de subir.
+
+É a mesma família de pegadinha que já mordeu neste repo: o commit `1385717`
+(`chore: redeploy do preview para pegar LAPAK_ENV=prod`) existe porque env var
+nova não alcança um preview já publicado. **Regra geral:** mexeu em env var,
+pergunte "em quais contextos?" e "quais deploys precisam ser republicados?".
+
+Consequência prática para o Brief 5: `tests/check-secrets.sh` tem uma lista fixa
+de padrões no passo 1 e **ainda não conhece a Resend**. Quando o código de email
+entrar, essa lista precisa ganhar `RESEND_API_KEY` e o prefixo `re_` — senão a
+checagem que existe para impedir secret no bundle público passaria batida
+justamente na credencial nova.
+
+---
+
+## 11. Fechamento
 
 - Lote de teste `RLBK-B6TESTE001` e seus dois conteúdos fictícios **descartados**
   ao final (o batch leva os conteúdos junto por `ON DELETE CASCADE`). Nenhuma
@@ -252,7 +283,7 @@ fail-closed funcionando; re-rodar o seed do §3 da migration.
 
 ---
 
-## 11. Próximos passos
+## 12. Próximos passos
 
 - **Cadastrar os SKUs da Plusmo** quando as denominações chegarem (Minecraft e
   Roblox, MX, só PIN). É `INSERT`, sem deploy. Confirmar o `variant` no catálogo
@@ -261,7 +292,10 @@ fail-closed funcionando; re-rodar o seed do §3 da migration.
   deve escrever como `authenticated` + `is_admin()`, **não** com a Secret key —
   o `service_role` tem só `SELECT` nesta tabela, e um `42501` ali é o desenho,
   não um bug.
-- **Brief 5** (emails) e **Brief 7** (locale `es-MX`).
+- **Brief 5** (emails): infra pronta (§10). Ao escrever o código, ensinar
+  `tests/check-secrets.sh` sobre `RESEND_API_KEY` / `re_`, e lembrar que
+  rotação de key toca **dois** contextos do Netlify.
+- **Brief 7** (locale `es-MX`).
 - Segue valendo o item do log anterior: alertar quando `unmapped_sku`,
   `unmapped_delivery_sku`, `sku_delivery_mismatch` ou `all_contents_refused`
   aparecerem no log. São sempre erro nosso de cadastro, nunca do usuário — e
