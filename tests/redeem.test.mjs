@@ -1016,7 +1016,7 @@ test("SKU trocado continua recusado pela tabela (§8.2 do Brief 2, agora via ban
 
 /* ================= emails transacionais (Brief 5) ================== */
 
-test("boas-vindas sai no claim, UMA vez por voucher", async () => {
+test("boas-vindas sai depois do create aceito, UMA vez por voucher", async () => {
   await redeemDtu();
 
   const welcome = db.emails.filter((e) => /Recebemos seu resgate/.test(e.subject));
@@ -1278,4 +1278,61 @@ test("lote sem site_host usa o reload — default preservado", async () => {
 
   assert.equal(db.emails.length, 1);
   assert.ok(db.emails[0].html.includes("https://reload.recargagames.com"));
+});
+
+/* ---- o gatilho do boas-vindas segue o desfecho do create ---- */
+
+test("create recusado NÃO manda boas-vindas — não houve compra", async () => {
+  // A razão de o gatilho ter saído do claim: aqui nada foi criado, o
+  // voucher volta pro portador e "recebemos seu resgate" seria mentira.
+  db.createResponse = { status: 200, ok: true, data: { code: "OUT_OF_STOCK", data: {} } };
+
+  const { body } = await redeemDtu();
+
+  assert.equal(body.status, "failed");
+  assert.equal(voucherByCode(CODE).status, "EMITIDO", "o voucher não voltou");
+  assert.equal(db.emails.length, 0, "mandou boas-vindas de um resgate que falhou");
+  // E o voucher segue elegível: a próxima tentativa é que vai mandar.
+  assert.equal(voucherByCode(CODE).welcome_email_at ?? null, null);
+});
+
+test("proxy negando a chave também não manda boas-vindas", async () => {
+  db.createResponse = { __http: 401 };
+  const { body } = await redeemDtu();
+  assert.equal(body.status, "failed");
+  assert.equal(db.emails.length, 0);
+});
+
+test("create ambíguo MANDA boas-vindas — o voucher foi consumido", async () => {
+  // Timeout: a order pode existir, o voucher fica em PROCESSING e não
+  // volta pro portador. "Estamos processando" é o estado real dele.
+  const timeout = new Error("timed out");
+  timeout.name = "TimeoutError";
+  db.createResponse = timeout;
+
+  const { body } = await redeemDtu();
+
+  assert.equal(body.status, "processing");
+  assert.equal(voucherByCode(CODE).status, "PROCESSING");
+  assert.equal(db.emails.length, 1, "portador ficou sem aviso de um voucher consumido");
+  assert.match(db.emails[0].subject, /Recebemos seu resgate/);
+});
+
+test("o boas-vindas nunca sai antes do create", async () => {
+  // Garante a ORDEM, não só o resultado: se alguém mover o disparo de
+  // volta pra cima, este teste cai mesmo com o create bem-sucedido.
+  const ordem = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const alvo = String(url);
+    if (alvo.includes("/api/order") && !alvo.includes("order_status")) ordem.push("create");
+    if (alvo.includes("api.resend.com")) ordem.push("email");
+    return fetchOriginal(url, init);
+  };
+  try {
+    await redeemDtu();
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+  assert.deepEqual(ordem, ["create", "email"], `ordem errada: ${ordem.join(" → ")}`);
 });

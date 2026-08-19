@@ -250,7 +250,7 @@ outro repo), multi-idioma, reenvio de PIN por e-mail, carrinho, pagamento.
 ## 9. Comandos úteis
 
 ```bash
-npm test                     # 154 testes, Supabase, Lapak e Resend stubados
+npm test                     # 158 testes, Supabase, Lapak e Resend stubados
 npm run check:secrets        # secrets/SKU/credencial no bundle público
 node tests/dev-server.mjs    # harness local em :8000, functions reais
 ```

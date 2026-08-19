@@ -287,25 +287,9 @@ export default async (req, context) => {
     console.error(`[redeem] player_data não gravado code=${label}: ${err.message}`)
   );
 
-  // Boas-vindas (Brief 5). Fica ANTES do create e fora do caminho crítico:
-  // é `await` só pra não deixar promessa solta num runtime que pode
-  // congelar a function depois da resposta, mas o retorno é ignorado e a
-  // função não lança — nem chave faltando, nem Resend fora do ar chegam
-  // aqui como erro. Uma vez por voucher: quem envia é quem ganha o UPDATE
-  // condicional lá dentro.
-  //
-  // RESSALVA CONHECIDA: se o create falhar logo abaixo, o voucher volta
-  // pra EMITIDO e o portador já terá recebido "recebemos seu resgate".
-  // É o que o brief pede (disparo no sucesso do claim) e o custo é um
-  // email a mais; a alternativa — mandar só depois do create — deixaria
-  // sem email justamente quem fecha a aba durante a espera.
-  await sendWelcome(cfg, {
-    voucherId: claim.voucherId,
-    email: checked.clean.email,
-    locale: verdict.batch.locale,
-    siteHost: verdict.batch.site_host,
-    label,
-  });
+  // Boas-vindas (Brief 5) NÃO saem aqui. Ver o bloco `welcome` mais
+  // abaixo: o disparo espera o create, pra ninguém receber "recebemos seu
+  // resgate" de uma compra que não aconteceu.
 
   // ---------------- A ÚNICA CHAMADA QUE GASTA DINHEIRO ----------------
   // `fields` são só os NOMES dos campos preenchidos. Valor de email, CPF e
@@ -318,6 +302,30 @@ export default async (req, context) => {
     fields: Object.keys(checked.clean),
     requires_ip: form.requiresIp,
   });
+
+  // Boas-vindas, disparadas SÓ depois de o create resolver (decisão de
+  // 2026-08-19, revendo o gatilho original do brief).
+  //
+  // O critério não é "deu certo", é "o voucher foi consumido":
+  //   sucesso   → manda. Existe order.
+  //   ambíguo   → manda. A order PODE existir, o voucher fica em
+  //               PROCESSING e não volta pro portador; "estamos
+  //               processando" é literalmente o estado dele.
+  //   definitivo→ NÃO manda. Nada foi criado, o voucher volta pra EMITIDO
+  //               e o portador vai escolher de novo. Um "recebemos seu
+  //               resgate" aqui seria mentira.
+  //
+  // Não lança, não bloqueia e o retorno é ignorado — a regra de que email
+  // nunca derruba resgate continua valendo, agora num ponto onde o
+  // dinheiro já saiu e nada pode ser desfeito por causa dele.
+  const welcome = () =>
+    sendWelcome(cfg, {
+      voucherId: claim.voucherId,
+      email: checked.clean.email,
+      locale: verdict.batch.locale,
+      siteHost: verdict.batch.site_host,
+      label,
+    });
 
   let order;
   try {
@@ -351,6 +359,7 @@ export default async (req, context) => {
         `sku=${content.product_code} — voucher fica em PROCESSING, conferir no painel da Lapak`
     );
     logEvent({ ...logBase, result: "ambiguous", error_code: err.code });
+    await welcome();
     return json(200, { status: "processing", attempt_ref: ref }, cors);
   }
 
@@ -367,6 +376,8 @@ export default async (req, context) => {
         `attempt=${claim.attemptNumber}: ${err.message}`
     );
   }
+
+  await welcome();
 
   logEvent({ ...logBase, result: "processing", tid: order.tid, cost_idr: order.totalPriceIdr });
 
