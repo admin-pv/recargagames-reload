@@ -1,9 +1,15 @@
-# Playvision — Log de Sessão 2026-08-19 (Reload / Brief 6)
+# Playvision — Log de Sessão 2026-08-19 (Reload / Briefs 6 e 5)
 
-**Foco:** Brief 6 — mapeamento SKU → `delivery_type` em tabela, fail-closed.
-**Modo:** cuidado (toca o caminho da Lapak e a trava que decide o tipo da order).
+**Foco:** dois briefs no mesmo dia — **Brief 6** (mapeamento SKU →
+`delivery_type` em tabela) e **Brief 5** (emails transacionais via Resend).
+**Modo:** cuidado nos dois (o 6 toca a trava que decide o tipo da order; o 5
+toca dado pessoal e o PIN).
 **Repo:** `admin-pv/recargagames-reload`.
-**Motivador:** campanha da Plusmo (mercado MX, Minecraft e Roblox, só PIN).
+**Motivador comum:** campanha da Plusmo (mercado MX, Minecraft e Roblox, só
+PIN). O 6 tira o cadastro de SKU do deploy; o 5 tira o PIN da dependência de uma
+aba aberta. Sem os dois, a campanha não roda.
+
+> **Estrutura:** §1–§9 são o Brief 6; §10–§13, o Brief 5. §14 e §15 fecham o dia.
 
 ---
 
@@ -21,8 +27,12 @@
 - Migration `2026-08-19-pv-sku-delivery-map.sql` aplicada e conferida **antes**
   do merge, com a resolução do Free Fire provada em SQL.
 - **122 testes** (+24), `check:secrets` limpo.
-- **Brief 5 destravado do lado da infra** (§10): domínio verificado no Resend e
-  `RESEND_API_KEY` no Netlify. Nenhum código de email foi escrito.
+- **Brief 5 também entregue e em produção** (§10–§13): boas-vindas e entrega do
+  PIN por email, bilíngue, com links por parceiro. PR #5, merge `22c348e`.
+- **E2E do Brief 5 aprovado com order real:** dois emails na caixa, **DKIM
+  pass**, voucher `USADO`, e todas as colunas de auditoria no gabarito.
+  Custo: **1 order, 12.251 IDR (R$3,4611)** — o único gasto do dia.
+- **158 testes** no fim do dia (98 no começo).
 
 ---
 
@@ -241,49 +251,215 @@ fail-closed funcionando; re-rodar o seed do §3 da migration.
 
 ---
 
-## 10. Preparação do Brief 5 (emails) — infra, sem código
+## 10. Brief 5 — o que foi construído
 
-Nada do Brief 5 foi construído nesta sessão. O que ficou pronto é a infra que
-ele vai precisar:
+```
+lib/mailer.mjs           envio via Resend. NUNCA lança — falha vira { ok: false }
+lib/email-templates.mjs  templates pt-BR / es-MX. Funções puras
+lib/notify.mjs           decide, monta, manda e registra os dois emails
+migrations/2026-08-19-pv-emails.sql
+```
 
-- **Domínio `Verified` no Resend.**
-- **`RESEND_API_KEY` cadastrada no Netlify.** Entra na lista de secrets que
-  vivem **só** em env var do painel, junto de `SUPABASE_SECRET_KEY`,
-  `IP_HASH_SALT` e `PROXY_RELOAD_KEY`. Nunca no repo, nunca no front.
+Cinco colunas novas: `pv_batches.locale` e `.site_host`;
+`pv_vouchers.welcome_email_at`; `pv_redeem_attempts.pin_email_due` e
+`.pin_email_at`. Mais um índice parcial na fila.
 
-**A armadilha, registrada agora para não custar caro depois:** no plano Free do
-Resend a key é *secret* e **por contexto**. Rotacionar não é trocar em um lugar
-— exige trocar em **Production E em Deploy Previews, separadamente**. Esquecer o
-preview significa preview rodando com key revogada, e a falha aparece no
+**Infra que já estava pronta antes do código:** domínio `Verified` no Resend e
+`RESEND_API_KEY` no Netlify.
+
+**A armadilha da chave, que continua valendo:** no plano Free do Resend ela é
+*secret* e **por contexto**. Rotacionar exige trocar em **Production E em Deploy
+Previews, separadamente**. Esquecer o preview deixa key revogada rodando no
 ambiente onde justamente se testa antes de subir.
 
-É a mesma família de pegadinha que já mordeu neste repo: o commit `1385717`
-(`chore: redeploy do preview para pegar LAPAK_ENV=prod`) existe porque env var
-nova não alcança um preview já publicado. **Regra geral:** mexeu em env var,
-pergunte "em quais contextos?" e "quais deploys precisam ser republicados?".
-
-Consequência prática para o Brief 5: `tests/check-secrets.sh` tem uma lista fixa
-de padrões no passo 1 e **ainda não conhece a Resend**. Quando o código de email
-entrar, essa lista precisa ganhar `RESEND_API_KEY` e o prefixo `re_` — senão a
-checagem que existe para impedir secret no bundle público passaria batida
-justamente na credencial nova.
+É a mesma família de pegadinha do commit `1385717` (`redeploy do preview para
+pegar LAPAK_ENV=prod`): env var nova não alcança um preview já publicado.
+**Regra geral:** mexeu em env var, pergunte "em quais contextos?" e "quais
+deploys precisam ser republicados?".
 
 ---
 
-## 11. Fechamento
+## 11. Brief 5 — as quatro decisões
 
-- Lote de teste `RLBK-B6TESTE001` e seus dois conteúdos fictícios **descartados**
-  ao final (o batch leva os conteúdos junto por `ON DELETE CASCADE`). Nenhuma
-  linha em `pv_redeem_attempts` para limpar — nenhuma tentativa chegou a nascer,
-  que era exatamente o ponto do teste.
-- Nenhuma order criada nesta sessão. Nenhum dado pessoal coletado.
-- O código do lote de teste do caminho feliz **não foi registrado neste log**: é
-  um lote vivo, e código de voucher é segredo ao portador. Aqui vale a mesma
-  regra do log de produção — só o prefixo.
+**1. A regra que governa tudo: falha de email nunca falha o resgate.** Nenhuma
+função de `mailer.mjs` ou `notify.mjs` lança. Chave ausente, Resend fora do ar,
+timeout e erro HTTP devolvem `{ ok: false }`. Não é convenção: com a Resend
+mockada em 500, o teste exige que o resgate conclua, o voucher vire `USADO` e o
+PIN apareça na tela. O portador já pagou; o email é cortesia.
+
+**2. O grão das duas flags é diferente — o brief sugeria as duas no attempt.**
+
+- *Boas-vindas* → `pv_vouchers.welcome_email_at`. "Uma vez por voucher" não
+  sobrevive no attempt: um create recusado devolve o voucher para `EMITIDO` e a
+  retentativa mandaria um "bem-vindo" novo. A coluna é também a trava de
+  concorrência (`UPDATE … WHERE welcome_email_at IS NULL`), mesma mecânica do
+  claim atômico.
+- *Email de PIN* → `pin_email_due` (fila) + `pin_email_at` (auditoria). Duas
+  colunas porque, com só `pin_email_at IS NULL` como fila, todo resgate DTU
+  ficaria pendente para sempre, engordando índice e varredura com linhas que
+  nunca saem.
+
+**3. O gatilho do boas-vindas mudou depois da revisão.** Começou no sucesso do
+claim, como o brief pedia. Movido para **depois de o create resolver**, porque no
+lugar antigo um create recusado devolvia o voucher com o portador já tendo
+recebido "recebemos seu resgate" — email de uma compra que não aconteceu.
+
+O critério não é "deu certo", é **"o voucher foi consumido"**:
+
+| Desfecho do create | Manda? | Por quê |
+|---|---|---|
+| Sucesso | sim | existe order |
+| Ambíguo (timeout) | **sim** | a order pode existir, o voucher fica em `PROCESSING` e não volta ao portador — "estamos processando" é o estado literal dele |
+| Definitivo | **não** | nada foi criado, o voucher volta a valer |
+
+O caso ambíguo é o que impediu de usar "só no sucesso": ali o portador teve o
+voucher consumido e ficaria sem aviso nenhum — o silêncio que o brief quer
+eliminar. Um dos testes verifica a **ordem das chamadas**, não só o resultado: se
+alguém mover o disparo de volta para cima, ele quebra mesmo com o create OK.
+
+**4. O hostname dos links vem do banco, nunca do header `Host`.** Pedido em
+revisão: o link do rodapé não pode ser fixo em `reload.recargagames.com`, porque
+um resgate do lote da Plusmo mandaria o portador para um site que ele nunca viu.
+
+Seria natural usar o `Host` da requisição — é literalmente "de onde veio o
+resgate". **Não foi.** Esse header é controlado por quem chama, e o
+`/api/redeem` aceita request sem `Origin` (curl). Um `Host: evil.com` forjado
+colocaria um link de phishing dentro de um email assinado com o **nosso DKIM**.
+Vindo de `pv_batches.site_host`, o valor é escrito por admin e nunca pelo
+visitante.
+
+Como ele vira `href`, há duas camadas: `CHECK` de formato na coluna (só hostname
+— sem esquema, barra, porta ou aspas) e `resolveSiteHost()` no template, que
+devolve o default para qualquer coisa malformada. O teste passa 11 entradas
+hostis, incluindo tentativa de escapar do atributo e esquema `javascript:`.
+
+O **branding visual segue Recarga Games para todos**; o que varia é o destino do
+link.
 
 ---
 
-## 12. Próximos passos
+## 12. Brief 5 — o achado, e o que ele economizou
+
+`orderStatus()` devolve `{status, pin, serial}`, e a reconciliação **já lia isso
+e descartava o PIN** (`reconcile.mjs:108`, comentário explicando que "não há
+ninguém na tela").
+
+Ou seja: o caso que motivou o brief inteiro — portador fechou a aba, o job fecha
+o resgate sozinho — passou a mandar o email **sem nenhuma chamada extra ao
+fornecedor**. Um teste garante que a Lapak é consultada exatamente uma vez.
+
+**O retry precisou de fila própria** por uma razão que só aparece olhando o
+estado: quando o email de PIN falha, o voucher **já está `USADO`**, e
+`listProcessingVouchers()` não o enxerga mais. Daí a segunda varredura na
+reconciliação, alimentada pelo `pin_email_due`.
+
+Janela de **24h**, a mesma da reexibição na tela. Deliberado: passado isso o
+código sai de cena em **todos** os canais. Um caminho que ressuscitasse PIN dias
+depois seria uma regra a mais para lembrar e uma superfície a mais para errar.
+
+---
+
+## 13. Brief 5 — PII, e a primeira flexibilização da regra do PIN
+
+Três coisas mudaram de superfície e ficam registradas:
+
+**1. O endereço do portador passou a circular em `status.mjs` e
+`reconcile.mjs`** (entrou no `ATTEMPT_SELECT`). Eram caminhos limpos de PII.
+Contramedida: log recebe só o **domínio** (`recipientDomain()`), que responde
+"está falhando só num provedor?" sem identificar ninguém.
+
+**2. O corpo de erro da Resend não é lido.** Em 422 ela ecoa o destinatário na
+mensagem. Há teste que **falha** se alguém passar a lê-lo.
+
+**3. O PIN em claro no email é a primeira flexibilização real** da regra "PIN não
+é persistido em lugar nenhum" (§5.6 do `CLAUDE.md`). Ele agora existe na infra da
+Resend e na caixa do portador — dois lugares fora do nosso controle. Foi a troca
+aceita para matar o chamado nº 1 previsto para a campanha. Continua sem coluna,
+sem log e sem cache nosso. Está registrado no `CLAUDE.md` como troca deliberada,
+não como esquecimento — para que ninguém "descubra" isso depois achando que foi
+descuido.
+
+**Emails transacionais não dependem de `marketing_optin`.** O optin governa
+marketing futuro; confirmação de resgate e entrega de código são execução do que
+a pessoa pediu. O E2E foi feito com o optin **desmarcado**, provando isso na
+prática.
+
+**Lacuna fechada:** `tests/check-secrets.sh` passou a conhecer `RESEND_API_KEY` e
+o prefixo `re_` — pendência que o próprio log do Brief 6 tinha registrado horas
+antes. Verificada por **teste negativo**: com uma chave falsa em `public/`, o
+checklist reprova.
+
+---
+
+## 14. Brief 5 — validação e o E2E
+
+**158 testes** no fim do dia, contra 98 no começo. `check:secrets` limpo.
+
+O que os testes novos cobrem, além dos templates: mailer que nunca lança
+(timeout, rede morta, 401/422, destinatário inválido); os três desfechos do
+create; email uma vez por voucher; DTU sem email de PIN; Resend em 500 sem
+afetar resgate; chave ausente sem afetar resgate; PIN, serial, endereço e chave
+fora do log; reconciliação mandando o email do abandono de tela; reenvio da
+fila; janela de 24h barrando reenvio tardio; hostname do parceiro atravessando
+lote → email; 11 hostnames hostis.
+
+**Teste de falha em preview: dispensado por decisão do owner.** O raciocínio
+registrado: as duas provas locais (500 mockado e chave ausente) exercitam o mesmo
+caminho de código, o isolamento por try/catch é estrutural, e se o envio falhar
+no E2E real o comportamento é idêntico ao que o teste provaria — com a fila
+recuperando. Fica anotado que a decisão foi consciente, não esquecimento.
+
+**E2E em produção, com order real — aprovado integralmente:**
+
+| Item | Resultado |
+|---|---|
+| Emails | Boas-vindas + entrega do PIN, ambos na caixa |
+| DKIM | **pass** |
+| Voucher | `USADO`, `order_ref` preenchido |
+| `welcome_email_at` | preenchido |
+| `pin_delivered` | `true` (tela) |
+| `pin_email_due` / `pin_email_at` | `false` / preenchido (email) |
+| Custo | **12.251 IDR = R$3,4611** |
+
+As duas últimas linhas são o par que justifica o desenho: `pin_delivered` mede a
+**tela**, `pin_email_at` mede o **email**. Canais separados, colunas separadas —
+os dois caminhos de entrega funcionaram de forma independente, sem sobrecarregar
+o significado de `pin_delivered`.
+
+**O número do custo é o primeiro dado real de uma order PIN isolada** (o log de
+31/07 tinha 3 orders somadas, misturando DTU e PIN). R$3,46 por cartão de 100
+diamantes é a base para a conta da campanha da Plusmo.
+
+---
+
+## 15. Fechamento
+
+**Brief 6.** Lote de teste `RLBK-B6TESTE001` e seus dois conteúdos fictícios
+**descartados** (o batch leva os conteúdos junto por `ON DELETE CASCADE`).
+Nenhuma linha em `pv_redeem_attempts` para limpar — nenhuma tentativa chegou a
+nascer, que era exatamente o ponto do teste.
+
+**Brief 5.** Lote `RLBK-B5E2E00001` **cancelado, não apagado**. A diferença
+importa: o voucher está `USADO` e carrega o `order_ref` de uma order que foi
+**paga de verdade**. Apagar a linha apagaria a trilha dessa order — mesmo motivo
+pelo qual os `USADO` dos lotes de teste do Brief 3 foram preservados em 31/07.
+Cancelar o lote basta para tirá-lo de circulação: `pv_redeem_claim()` exige
+`batch.status = 'active'`.
+
+**Gasto do dia: 1 order, 12.251 IDR (R$3,4611).** Todo o resto foi provado sem
+tocar em dinheiro.
+
+**Dado pessoal coletado:** o email do Vinicius no E2E, gravado em
+`pv_redeem_attempts.email` como qualquer resgate. Optin de marketing desmarcado.
+
+**Códigos de voucher neste log:** só os dos lotes descartáveis
+(`RLBK-B6TESTE001`, `RLBK-B5E2E00001`), ambos fora de circulação. O código do
+lote vivo usado no caminho feliz do Brief 6 **não foi registrado** — código de
+voucher é segredo ao portador, e aqui vale a mesma regra do log de produção.
+
+---
+
+## 16. Próximos passos
 
 - **Cadastrar os SKUs da Plusmo** quando as denominações chegarem (Minecraft e
   Roblox, MX, só PIN). É `INSERT`, sem deploy. Confirmar o `variant` no catálogo
@@ -292,10 +468,18 @@ justamente na credencial nova.
   deve escrever como `authenticated` + `is_admin()`, **não** com a Secret key —
   o `service_role` tem só `SELECT` nesta tabela, e um `42501` ali é o desenho,
   não um bug.
-- **Brief 5** (emails): infra pronta (§10). Ao escrever o código, ensinar
-  `tests/check-secrets.sh` sobre `RESEND_API_KEY` / `re_`, e lembrar que
-  rotação de key toca **dois** contextos do Netlify.
-- **Brief 7** (locale `es-MX`).
+- **Brief 7** (locale `es-MX`, remoção de CPF, reskin). Dois pontos que este dia
+  deixou preparados e um que ele descobriu:
+  - `pv_batches.locale` e `.site_host` já existem e já atravessam até o email. O
+    Brief 7 pode sobrescrever o locale com o do site; a coluna vira fallback.
+  - **CORS é o ponto aberto.** Se o site da Plusmo ficar em domínio próprio *e*
+    chamar nossa API cross-origin, o `lib/http.mjs:12` barra — `CANONICAL_ORIGIN`
+    é fixo e a allowlist não conhece parceiro. Servido do mesmo host (subdomínio
+    nosso ou site Netlify próprio), o `selfOrigin` já resolve. É decisão de
+    arquitetura, e é melhor tomá-la antes de escrever o Brief 7.
+- **Reenvio self-service do email** pelo portador: o brief mandou avaliar no
+  fechamento. Hoje a recuperação é a tela (24h) ou o suporte. Vale só se os
+  chamados aparecerem — a fila automática já cobre a falha técnica.
 - Segue valendo o item do log anterior: alertar quando `unmapped_sku`,
   `unmapped_delivery_sku`, `sku_delivery_mismatch` ou `all_contents_refused`
   aparecerem no log. São sempre erro nosso de cadastro, nunca do usuário — e
