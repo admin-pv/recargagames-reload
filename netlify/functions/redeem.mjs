@@ -56,6 +56,7 @@ import {
 } from "../../lib/vouchers.mjs";
 import { fieldsForContent, validatePlayerData } from "../../lib/forms.mjs";
 import { loadSkuMap } from "../../lib/sku-map.mjs";
+import { sendWelcome } from "../../lib/notify.mjs";
 import { lapakConfig, redeemEnabled, createOrder, convertCost, LapakError } from "../../lib/lapak.mjs";
 import {
   claimVoucher,
@@ -286,6 +287,10 @@ export default async (req, context) => {
     console.error(`[redeem] player_data não gravado code=${label}: ${err.message}`)
   );
 
+  // Boas-vindas (Brief 5) NÃO saem aqui. Ver o bloco `welcome` mais
+  // abaixo: o disparo espera o create, pra ninguém receber "recebemos seu
+  // resgate" de uma compra que não aconteceu.
+
   // ---------------- A ÚNICA CHAMADA QUE GASTA DINHEIRO ----------------
   // `fields` são só os NOMES dos campos preenchidos. Valor de email, CPF e
   // user_id não entra em log em nenhuma hipótese — nem o attempt_ref, que
@@ -297,6 +302,30 @@ export default async (req, context) => {
     fields: Object.keys(checked.clean),
     requires_ip: form.requiresIp,
   });
+
+  // Boas-vindas, disparadas SÓ depois de o create resolver (decisão de
+  // 2026-08-19, revendo o gatilho original do brief).
+  //
+  // O critério não é "deu certo", é "o voucher foi consumido":
+  //   sucesso   → manda. Existe order.
+  //   ambíguo   → manda. A order PODE existir, o voucher fica em
+  //               PROCESSING e não volta pro portador; "estamos
+  //               processando" é literalmente o estado dele.
+  //   definitivo→ NÃO manda. Nada foi criado, o voucher volta pra EMITIDO
+  //               e o portador vai escolher de novo. Um "recebemos seu
+  //               resgate" aqui seria mentira.
+  //
+  // Não lança, não bloqueia e o retorno é ignorado — a regra de que email
+  // nunca derruba resgate continua valendo, agora num ponto onde o
+  // dinheiro já saiu e nada pode ser desfeito por causa dele.
+  const welcome = () =>
+    sendWelcome(cfg, {
+      voucherId: claim.voucherId,
+      email: checked.clean.email,
+      locale: verdict.batch.locale,
+      siteHost: verdict.batch.site_host,
+      label,
+    });
 
   let order;
   try {
@@ -330,6 +359,7 @@ export default async (req, context) => {
         `sku=${content.product_code} — voucher fica em PROCESSING, conferir no painel da Lapak`
     );
     logEvent({ ...logBase, result: "ambiguous", error_code: err.code });
+    await welcome();
     return json(200, { status: "processing", attempt_ref: ref }, cors);
   }
 
@@ -346,6 +376,8 @@ export default async (req, context) => {
         `attempt=${claim.attemptNumber}: ${err.message}`
     );
   }
+
+  await welcome();
 
   logEvent({ ...logBase, result: "processing", tid: order.tid, cost_idr: order.totalPriceIdr });
 

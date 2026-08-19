@@ -8,6 +8,8 @@
 #    Introduzir a admin key aqui daria ao app público um credencial que
 #    derruba a loja inteira se vazar.
 # 4) Nenhum SKU/product_code no front.
+# 5) A chave da Resend (Brief 5) não vaza pro bundle público — nem o nome
+#    da env var, nem um valor com a cara de key (re_...).
 #
 # Rodar: bash tests/check-secrets.sh   (ou npm run check:secrets)
 set -uo pipefail
@@ -17,7 +19,7 @@ fail=0
 report() { printf '  %s %s\n' "$1" "$2"; }
 
 echo "→ 1. secrets no bundle público (public/)"
-for pattern in 'sb_secret' 'SUPABASE_SECRET_KEY' 'IP_HASH_SALT' 'service_role' 'eyJhbGciOi'; do
+for pattern in 'sb_secret' 'SUPABASE_SECRET_KEY' 'IP_HASH_SALT' 'service_role' 'eyJhbGciOi' 'RESEND_API_KEY'; do
   if grep -rIn --exclude-dir=.git -- "$pattern" public/ >/dev/null 2>&1; then
     report "✗" "ENCONTRADO '$pattern' em public/ — abortar deploy"
     grep -rIn --exclude-dir=.git -- "$pattern" public/ | sed 's/^/      /'
@@ -53,6 +55,18 @@ if grep -rIn --exclude-dir=.git -- 'product_code' public/ >/dev/null 2>&1; then
   fail=1
 else
   report "✓" "front não conhece product_code"
+fi
+
+# Valor de chave da Resend tem forma própria (re_ + ~30 chars). Regex, e
+# não string fixa: 're_' cru daria falso positivo em qualquer
+# 'score_', 'more_' ou 'share_' do front.
+echo "→ 5. valor de chave da Resend fora do front"
+if grep -rInE --exclude-dir=.git -- 're_[A-Za-z0-9_-]{20,}' public/ >/dev/null 2>&1; then
+  report "✗" "algo com cara de RESEND_API_KEY em public/ — abortar deploy"
+  grep -rInE --exclude-dir=.git -- 're_[A-Za-z0-9_-]{20,}' public/ | sed 's/^/      /'
+  fail=1
+else
+  report "✓" "nenhum valor de chave da Resend"
 fi
 
 echo

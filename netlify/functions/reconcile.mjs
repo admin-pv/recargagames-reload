@@ -31,11 +31,16 @@ import { lapakConfig, orderStatus, LapakError, TERMINAL_ERROR_STATUS } from "../
 import { logEvent, codeLabel } from "../../lib/http.mjs";
 import {
   listProcessingVouchers,
+  listPendingPinEmails,
   reconcileDecision,
   releaseVoucher,
   failAttempt,
   finishRedeem,
+  PIN_REPLAY_MS,
 } from "../../lib/redeem.mjs";
+import { loadSkuMap } from "../../lib/sku-map.mjs";
+import { expectedDeliveryType } from "../../lib/forms.mjs";
+import { sendPinEmail } from "../../lib/notify.mjs";
 
 // A cada 15 min, como o brief define. Um voucher abandonado resolve em no
 // máximo ~20 min (5 min pra tentativa ficar velha + o próximo tick).
@@ -56,7 +61,17 @@ export default async () => {
   }
 
   const nowMs = Date.now();
-  const tally = { seen: 0, waited: 0, settled: 0, released: 0, manual: 0, errors: 0 };
+  const tally = { seen: 0, waited: 0, settled: 0, released: 0, manual: 0, errors: 0, emails: 0 };
+
+  // Catálogo de entrega (Brief 6): aqui ele diz se o resgate concluído era
+  // de PIN e, portanto, se cabe email. Falha de leitura não derruba o job —
+  // sem o mapa, nenhum email sai neste tick e a fila espera o próximo.
+  let skuMap = [];
+  try {
+    skuMap = await loadSkuMap(cfg);
+  } catch (err) {
+    console.error(`[reconcile] sku map indisponível, emails adiados: ${err.message}`);
+  }
 
   let vouchers;
   try {
@@ -105,16 +120,40 @@ export default async () => {
       const result = await orderStatus(lapak, attempt.lapak_tid);
 
       if (result.status === "SUCCESS") {
-        // O PIN não é exibido aqui (não há ninguém na tela) e não é
-        // gravado. pin_delivered fica false: o portador ainda pode buscá-lo
-        // pelo /api/status dentro da janela de reexibição.
+        // Este é O caso que o Brief 5 existe pra resolver: o portador
+        // fechou a aba e ninguém está na tela pra ver o PIN. O
+        // order_status que acabou de ser lido JÁ traz o código em memória
+        // (result.pin), então o email sai daqui sem nenhuma chamada extra
+        // ao fornecedor.
+        //
+        // pin_delivered continua false de propósito: ele mede "apareceu na
+        // TELA". Quem registra o email é pin_email_at — dois canais, duas
+        // colunas, nenhuma sobrecarga de significado.
+        const isPin = expectedDeliveryType(attempt.product_code, skuMap) === "PIN";
+        const pin = isPin ? result.pin : null;
+
         await finishRedeem(cfg, {
           voucherId: voucher.id,
           attemptId: attempt.id,
           tid: attempt.lapak_tid,
           productCode: attempt.product_code,
           pinDelivered: false,
+          pinEmailDue: !!pin,
         });
+
+        if (pin) {
+          const sent = await sendPinEmail(cfg, {
+            attemptId: attempt.id,
+            email: attempt.email,
+            locale: voucher.batch?.locale,
+            siteHost: voucher.batch?.site_host,
+            pin,
+            serial: result.serial,
+            label,
+          });
+          if (sent) tally.emails += 1;
+        }
+
         tally.settled += 1;
         logEvent({ evt: "reconcile", result: "settled", code: label, tid: attempt.lapak_tid });
         continue;
@@ -147,6 +186,54 @@ export default async () => {
       console.error(`[reconcile] falha em code=${label}: ${detail}`);
     }
   }
+
+  // ---------------- reenvio do email de PIN (Brief 5) ----------------
+  //
+  // Segunda varredura, independente da primeira: aqui os vouchers JÁ estão
+  // USADO, então eles não aparecem em listProcessingVouchers(). A fila é a
+  // flag pin_email_due, baixada só quando um envio confirma.
+  //
+  // Rebusca o PIN na Lapak pelo tid — leitura pura, não cobra e não
+  // entrega nada. É o mesmo caminho da reexibição de 24h, pela mesma
+  // razão: não existe armazenamento nosso do PIN.
+  const since = new Date(nowMs - PIN_REPLAY_MS).toISOString();
+  let pending = [];
+  try {
+    pending = skuMap.length ? await listPendingPinEmails(cfg, since) : [];
+  } catch (err) {
+    console.error(`[reconcile] leitura da fila de email falhou: ${err.message}`);
+  }
+
+  for (const attempt of pending) {
+    const label = codeLabel(attempt.voucher?.code || "", cfg.salt);
+    try {
+      if (!attempt.lapak_tid) continue;
+      if (expectedDeliveryType(attempt.product_code, skuMap) !== "PIN") continue;
+
+      const result = await orderStatus(lapak, attempt.lapak_tid);
+      if (result.status !== "SUCCESS" || !result.pin) continue;
+
+      const sent = await sendPinEmail(cfg, {
+        attemptId: attempt.id,
+        email: attempt.email,
+        locale: attempt.voucher?.batch?.locale,
+        siteHost: attempt.voucher?.batch?.site_host,
+        pin: result.pin,
+        serial: result.serial,
+        label,
+      });
+      if (sent) tally.emails += 1;
+    } catch (err) {
+      tally.errors += 1;
+      const detail = err instanceof LapakError ? err.code : err.message;
+      console.error(`[reconcile] reenvio de email falhou code=${label}: ${detail}`);
+    }
+  }
+
+  // Fora da janela e ainda pendente = o PIN não vai mais por email. Vira
+  // uma linha de log, não um envio: passadas 24h o código sai de cena em
+  // TODOS os canais, sem exceção.
+  tally.email_queue = pending.length;
 
   logEvent({ evt: "reconcile", result: "run", ...tally });
   return new Response(JSON.stringify(tally), {

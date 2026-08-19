@@ -26,6 +26,7 @@ process.env.PROXY_RELOAD_KEY = "proxy-key-STUB-NAO-REAL";
 process.env.LAPAK_ENV = "dev";
 process.env.FX_USD_IDR = "16200";
 process.env.FX_BRL_USD = "5.4";
+process.env.RESEND_API_KEY = "re_STUB_NAO_REAL";
 
 const ORIGIN = "https://reload.recargagames.com";
 const CODE = "RLBK-VALIDO0001";
@@ -94,6 +95,9 @@ const db = {
   logs: [],
   // Catálogo pv_sku_delivery_map (Brief 6), programável por teste.
   skuMap: skuMapRows(),
+  // Emails (Brief 5): o que foi enviado e como a Resend responde.
+  emails: [],
+  emailResponse: { status: 200, body: { id: "re-stub-1" } },
   // Respostas programáveis do proxy.
   createResponse: null,
   statusResponse: null,
@@ -121,12 +125,16 @@ function resetDb() {
         id: "b1",
         name: "Lote Teste Reload",
         status: "active",
+        locale: "pt-BR",
+        site_host: "reload.recargagames.com",
         expires_at: new Date(Date.now() + 30 * 86400000).toISOString(),
         contents: contents(),
       },
     },
   ];
   db.skuMap = skuMapRows();
+  db.emails = [];
+  db.emailResponse = { status: 200, body: { id: "re-stub-1" } };
   db.createResponse = {
     status: 200,
     ok: true,
@@ -179,6 +187,14 @@ globalThis.fetch = async (url, init = {}) => {
     return jsonResponse([{ voucher_id: voucher.id, attempt_number: n }]);
   }
 
+  if (target.includes("api.resend.com")) {
+    db.emails.push({ auth: init.headers?.Authorization || null, ...body });
+    if (db.emailResponse.status >= 400) {
+      return jsonResponse({ message: "erro simulado" }, db.emailResponse.status);
+    }
+    return jsonResponse(db.emailResponse.body);
+  }
+
   if (target.includes("/rest/v1/pv_sku_delivery_map")) {
     return jsonResponse(db.skuMap);
   }
@@ -204,6 +220,33 @@ globalThis.fetch = async (url, init = {}) => {
       for (const row of rows) Object.assign(row, body);
       return jsonResponse(rows);
     }
+    // Fila de reenvio do email de PIN (Brief 5): pin_email_due=is.true
+    // + janela por created_at.
+    if (/pin_email_due=is\.true/.test(query)) {
+      const sinceMatch = query.match(/created_at=gt\.([^&]+)/);
+      const since = sinceMatch ? Date.parse(decodeURIComponent(sinceMatch[1])) : 0;
+      return jsonResponse(
+        db.attempts
+          .filter((a) => a.pin_email_due === true && Date.parse(a.created_at) > since)
+          .map((a) => {
+            const voucher = voucherById(a.voucher_id);
+            return {
+              ...a,
+              voucher: voucher
+                ? {
+                    id: voucher.id,
+                    code: voucher.code,
+                    batch: {
+                      locale: voucher.batch?.locale,
+                      site_host: voucher.batch?.site_host,
+                    },
+                  }
+                : null,
+            };
+          })
+      );
+    }
+
     // GET por attempt_ref, com o voucher embutido (select=...voucher:...)
     const ref = eqParam(query, "attempt_ref");
     const attempt = db.attempts.find((a) => a.attempt_ref === ref);
@@ -218,6 +261,10 @@ globalThis.fetch = async (url, init = {}) => {
               code: voucher.code,
               status: voucher.status,
               redeemed_at: voucher.redeemed_at,
+              batch: {
+                locale: voucher.batch?.locale ?? "pt-BR",
+                site_host: voucher.batch?.site_host,
+              },
             }
           : null,
       },
@@ -228,9 +275,15 @@ globalThis.fetch = async (url, init = {}) => {
     if (method === "PATCH") {
       const id = eqParam(query, "id");
       const requiredStatus = eqParam(query, "status");
-      // UPDATE condicional: se o status atual não bate, zero linhas.
+      // `welcome_email_at=is.null` é a trava do email de boas-vindas
+      // (Brief 5): o stub precisa honrá-la, senão o teste de "uma vez por
+      // voucher" passaria sem testar nada — todo PATCH devolveria a linha.
+      const requiresNullWelcome = /welcome_email_at=is\.null/.test(query);
       const rows = db.vouchers.filter(
-        (v) => v.id === id && (requiredStatus === null || v.status === requiredStatus)
+        (v) =>
+          v.id === id &&
+          (requiredStatus === null || v.status === requiredStatus) &&
+          (!requiresNullWelcome || !v.welcome_email_at)
       );
       for (const row of rows) Object.assign(row, body);
       return jsonResponse(rows);
@@ -244,6 +297,9 @@ globalThis.fetch = async (url, init = {}) => {
             id: v.id,
             code: v.code,
             status: v.status,
+            // PROCESSING_SELECT passou a embutir o lote (Brief 5): o job
+            // precisa do locale pra montar o email no idioma certo.
+            batch: { locale: v.batch?.locale ?? "pt-BR", site_host: v.batch?.site_host },
             attempts: db.attempts.filter((a) => a.voucher_id === v.id),
           }))
       );
@@ -956,4 +1012,327 @@ test("SKU trocado continua recusado pela tabela (§8.2 do Brief 2, agora via ban
   assert.equal(db.createCalls.length, 0);
   assert.equal(voucherByCode(CODE).status, "EMITIDO", "o voucher foi consumido à toa");
   assert.ok(db.logs.join("\n").includes("sku_delivery_mismatch"));
+});
+
+/* ================= emails transacionais (Brief 5) ================== */
+
+test("boas-vindas sai depois do create aceito, UMA vez por voucher", async () => {
+  await redeemDtu();
+
+  const welcome = db.emails.filter((e) => /Recebemos seu resgate/.test(e.subject));
+  assert.equal(welcome.length, 1, "boas-vindas não saiu (ou saiu duplicado)");
+  assert.deepEqual(welcome[0].to, [VALID_EMAIL]);
+  assert.equal(voucherByCode(CODE).welcome_email_at != null, true, "não carimbou o voucher");
+
+  // Segunda tentativa no MESMO voucher não manda de novo. Simula o
+  // create recusado: voucher volta pra EMITIDO e o portador tenta outra vez.
+  const voucher = voucherByCode(CODE);
+  voucher.status = "EMITIDO";
+  db.emails = [];
+  await redeemDtu();
+  assert.equal(
+    db.emails.filter((e) => /Recebemos seu resgate/.test(e.subject)).length,
+    0,
+    "mandou boas-vindas duas vezes para o mesmo voucher"
+  );
+});
+
+test("email do PIN sai no fechamento, com o código e o serial", async () => {
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  db.emails = [];
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  assert.equal(db.emails.length, 1);
+  const mail = db.emails[0];
+  assert.deepEqual(mail.to, [VALID_EMAIL]);
+  assert.match(mail.from, /no-reply@recargagames\.com/);
+  // O PIN aparece nas DUAS versões: quem lê em text/plain também recebe.
+  assert.ok(mail.html.includes(PIN_REAL), "PIN ausente do HTML");
+  assert.ok(mail.text.includes(PIN_REAL), "PIN ausente do text/plain");
+  assert.ok(mail.text.includes(SERIAL_REAL), "serial ausente");
+
+  // E a pendência foi baixada.
+  assert.equal(db.attempts[0].pin_email_due, false);
+  assert.ok(db.attempts[0].pin_email_at);
+});
+
+test("resgate DTU não gera email de PIN", async () => {
+  const started = await redeemDtu();
+  db.emails = [];
+  lapakStatus("SUCCESS", "");
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  assert.equal(db.emails.length, 0);
+  assert.notEqual(db.attempts[0].pin_email_due, true, "DTU entrou na fila de email de PIN");
+});
+
+/* ---- a regra inegociável: email nunca derruba o resgate ---- */
+
+test("Resend fora do ar: resgate segue normal, voucher USADO, PIN na tela", async () => {
+  db.emailResponse = { status: 500, body: {} };
+
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  assert.equal(started.body.status, "processing", "falha de email quebrou o redeem");
+
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  const done = await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  assert.equal(done.body.status, "success");
+  assert.equal(done.body.pin, PIN_REAL, "o PIN sumiu da tela por causa do email");
+  assert.equal(voucherByCode(CODE).status, "USADO");
+
+  // A falha vira log sem PII, e a pendência FICA para a reconciliação.
+  const joined = db.logs.join("\n");
+  assert.ok(joined.includes("email_send_failed"), "faltou o logEvent de falha");
+  assert.ok(!joined.includes(VALID_EMAIL), "endereço completo no log");
+  assert.equal(db.attempts[0].pin_email_due, true, "a pendência foi baixada mesmo com falha");
+});
+
+test("chave ausente não impede resgate nenhum", async () => {
+  const key = process.env.RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
+  try {
+    const started = await callRedeem({
+      code: CODE,
+      content_id: CONTENT_PIN,
+      player_data: { email: VALID_EMAIL, marketing_optin: false },
+    });
+    assert.equal(started.body.status, "processing");
+    lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+    const done = await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+    assert.equal(done.body.status, "success");
+    assert.equal(done.body.pin, PIN_REAL);
+    assert.equal(db.emails.length, 0, "mandou email sem chave configurada");
+  } finally {
+    process.env.RESEND_API_KEY = key;
+  }
+});
+
+/* ------------------- PIN e PII fora do log ------------------------ */
+
+test("nem o PIN nem o endereço do portador aparecem no log por causa do email", async () => {
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  const joined = db.logs.join("\n");
+  assert.ok(!joined.includes(PIN_REAL), "PIN no log");
+  assert.ok(!joined.includes(SERIAL_REAL), "serial no log");
+  assert.ok(!joined.includes(VALID_EMAIL), "email no log");
+  // O evento de sucesso existe, sem carregar nada disso junto.
+  assert.ok(joined.includes('"evt":"email"'), "faltou o evento de email");
+});
+
+test("a chave da Resend nunca entra em log", async () => {
+  db.emailResponse = { status: 401, body: {} };
+  await redeemDtu();
+  const joined = db.logs.join("\n");
+  assert.ok(!joined.includes("re_STUB_NAO_REAL"), "a chave vazou pro log");
+  assert.ok(joined.includes("http_401"), "faltou o código do erro");
+});
+
+test("o idioma do email vem do lote", async () => {
+  voucherByCode(CODE).batch.locale = "es-MX";
+  await redeemDtu();
+
+  const welcome = db.emails.find((e) => /Recibimos tu canje/.test(e.subject));
+  assert.ok(welcome, "não usou o template es-MX");
+  assert.ok(welcome.html.includes("RECARGA. JUEGA MÁS."), "tagline errada");
+  assert.ok(!welcome.html.includes("JOGUE MAIS"), "vazou copy pt-BR no email es-MX");
+});
+
+/* ---------- reconciliação: o caso que o Brief 5 existe pra cobrir ---------- */
+
+test("abandono de tela num resgate PIN: o job manda o código por email", async () => {
+  // É O cenário do brief. Ninguém está na tela, e o order_status que o job
+  // acabou de ler já traz o PIN em memória — email sai sem chamada extra.
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  assert.ok(started.body.attempt_ref);
+
+  db.attempts[0].created_at = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+  db.emails = [];
+  db.statusCalls = [];
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+
+  await reconcile();
+
+  assert.equal(voucherByCode(CODE).status, "USADO");
+  assert.equal(db.emails.length, 1, "o portador ficou sem o código");
+  assert.ok(db.emails[0].text.includes(PIN_REAL));
+  assert.equal(db.statusCalls.length, 1, "consultou a Lapak mais de uma vez para o mesmo PIN");
+
+  // pin_delivered mede a TELA e continua false; quem registra o email é
+  // pin_email_at. Dois canais, duas colunas.
+  assert.equal(db.attempts[0].pin_delivered, false);
+  assert.ok(db.attempts[0].pin_email_at);
+  assert.equal(db.attempts[0].pin_email_due, false);
+});
+
+test("email que falhou fica na fila e o job reenvia no tick seguinte", async () => {
+  db.emailResponse = { status: 503, body: {} };
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  assert.equal(db.attempts[0].pin_email_due, true, "a falha não virou pendência");
+  assert.equal(voucherByCode(CODE).status, "USADO", "o resgate foi afetado pelo email");
+
+  // Resend volta. O voucher já está USADO, então a primeira varredura do
+  // job nem o enxerga — quem o encontra é a fila.
+  db.emailResponse = { status: 200, body: { id: "re-stub-2" } };
+  db.emails = [];
+  await reconcile();
+
+  assert.equal(db.emails.length, 1, "não reenviou");
+  assert.ok(db.emails[0].html.includes(PIN_REAL));
+  assert.equal(db.attempts[0].pin_email_due, false);
+  assert.ok(db.attempts[0].pin_email_at);
+});
+
+test("passadas 24h a fila não reenvia — o PIN sai de cena em todos os canais", async () => {
+  db.emailResponse = { status: 503, body: {} };
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+  assert.equal(db.attempts[0].pin_email_due, true);
+
+  // Envelhece além da janela de reexibição.
+  db.attempts[0].created_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+  db.emailResponse = { status: 200, body: { id: "re-stub-3" } };
+  db.emails = [];
+
+  await reconcile();
+
+  assert.equal(db.emails.length, 0, "ressuscitou um PIN fora da janela de 24h");
+});
+
+test("reconciliação de DTU não manda email de PIN", async () => {
+  await redeemDtu();
+  db.attempts[0].created_at = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+  db.emails = [];
+  lapakStatus("SUCCESS", "");
+
+  await reconcile();
+
+  assert.equal(voucherByCode(CODE).status, "USADO");
+  assert.equal(db.emails.length, 0);
+});
+
+test("o hostname do parceiro atravessa do lote até o link do email", async () => {
+  // Cenário do Brief 7: lote da Plusmo, mercado MX. O portador nunca viu
+  // reload.recargagames.com e não pode ser mandado pra lá.
+  const voucher = voucherByCode(CODE);
+  voucher.batch.locale = "es-MX";
+  voucher.batch.site_host = "canje.plusmo.mx";
+
+  const started = await callRedeem({
+    code: CODE,
+    content_id: CONTENT_PIN,
+    player_data: { email: VALID_EMAIL, marketing_optin: false },
+  });
+  lapakStatus("SUCCESS", VOUCHER_CODE_STRING);
+  await callStatus({ code: CODE, attempt_ref: started.body.attempt_ref });
+
+  assert.equal(db.emails.length, 2, "esperado boas-vindas + PIN");
+  for (const mail of db.emails) {
+    assert.ok(mail.html.includes("https://canje.plusmo.mx"), "link do parceiro ausente");
+    assert.ok(
+      !mail.html.includes("reload.recargagames.com"),
+      "mandou o portador da Plusmo pro site do reload"
+    );
+    // Marca continua sendo a nossa nos dois.
+    assert.ok(mail.html.includes("RECARGA. JUEGA MÁS."));
+  }
+});
+
+test("lote sem site_host usa o reload — default preservado", async () => {
+  const voucher = voucherByCode(CODE);
+  delete voucher.batch.site_host;
+
+  await redeemDtu();
+
+  assert.equal(db.emails.length, 1);
+  assert.ok(db.emails[0].html.includes("https://reload.recargagames.com"));
+});
+
+/* ---- o gatilho do boas-vindas segue o desfecho do create ---- */
+
+test("create recusado NÃO manda boas-vindas — não houve compra", async () => {
+  // A razão de o gatilho ter saído do claim: aqui nada foi criado, o
+  // voucher volta pro portador e "recebemos seu resgate" seria mentira.
+  db.createResponse = { status: 200, ok: true, data: { code: "OUT_OF_STOCK", data: {} } };
+
+  const { body } = await redeemDtu();
+
+  assert.equal(body.status, "failed");
+  assert.equal(voucherByCode(CODE).status, "EMITIDO", "o voucher não voltou");
+  assert.equal(db.emails.length, 0, "mandou boas-vindas de um resgate que falhou");
+  // E o voucher segue elegível: a próxima tentativa é que vai mandar.
+  assert.equal(voucherByCode(CODE).welcome_email_at ?? null, null);
+});
+
+test("proxy negando a chave também não manda boas-vindas", async () => {
+  db.createResponse = { __http: 401 };
+  const { body } = await redeemDtu();
+  assert.equal(body.status, "failed");
+  assert.equal(db.emails.length, 0);
+});
+
+test("create ambíguo MANDA boas-vindas — o voucher foi consumido", async () => {
+  // Timeout: a order pode existir, o voucher fica em PROCESSING e não
+  // volta pro portador. "Estamos processando" é o estado real dele.
+  const timeout = new Error("timed out");
+  timeout.name = "TimeoutError";
+  db.createResponse = timeout;
+
+  const { body } = await redeemDtu();
+
+  assert.equal(body.status, "processing");
+  assert.equal(voucherByCode(CODE).status, "PROCESSING");
+  assert.equal(db.emails.length, 1, "portador ficou sem aviso de um voucher consumido");
+  assert.match(db.emails[0].subject, /Recebemos seu resgate/);
+});
+
+test("o boas-vindas nunca sai antes do create", async () => {
+  // Garante a ORDEM, não só o resultado: se alguém mover o disparo de
+  // volta pra cima, este teste cai mesmo com o create bem-sucedido.
+  const ordem = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const alvo = String(url);
+    if (alvo.includes("/api/order") && !alvo.includes("order_status")) ordem.push("create");
+    if (alvo.includes("api.resend.com")) ordem.push("email");
+    return fetchOriginal(url, init);
+  };
+  try {
+    await redeemDtu();
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+  assert.deepEqual(ordem, ["create", "email"], `ordem errada: ${ordem.join(" → ")}`);
 });

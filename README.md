@@ -45,6 +45,9 @@ lib/                    módulos server-side (fora de functions/ de propósito)
   vouchers.mjs          busca + avaliação de voucher (SÓ LEITURA)
   forms.mjs             SKU → categoria → campos, trava SKU × tipo, validação
   sku-map.mjs           catálogo SKU → PIN/DTU, lido de pv_sku_delivery_map
+  mailer.mjs            envio via Resend — NUNCA lança, falha vira { ok: false }
+  email-templates.mjs   templates pt-BR / es-MX (funções puras)
+  notify.mjs            decide, monta, manda e registra os dois emails
   redeem.mjs            claim atômico, trilha de tentativas, fechamento
   lapak.mjs             cliente do proxy: create, order_status, parsing do PIN
 forms-map.json          mapa estático de formulários (o tipo de entrega saiu daqui)

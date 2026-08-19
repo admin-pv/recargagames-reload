@@ -52,6 +52,7 @@ reconciliação. Ver §5.
 | Banco | Supabase `ashmirzgyuhspymldpfv`, tabelas `pv_*` (Brief 1) + `pv_validate_rate` |
 | Fornecedor | Lapak **só** via proxy `api.recargagames.com`, com `PROXY_RELOAD_KEY` |
 | Host | Netlify, site próprio, CD por push na `main` |
+| Email | **Resend**, domínio `recargagames.com`. Remetente `no-reply@`. Branding sempre Recarga Games; os **links** saem do `site_host` do lote. |
 | Deps | **zero** em produção. `package.json` existe só pelos scripts de teste. |
 
 ### Stack a evitar
@@ -86,6 +87,11 @@ SKU → tipo de entrega, em `migrations/2026-08-19-pv-sku-delivery-map.sql`
 (Brief 6). Esta última é a única tabela `pv_*` que o app **lê** e o admin
 **escreve** — CRUD pelo painel ainda não existe (Brief 4); até lá, INSERT no
 SQL Editor.
+
+Do Brief 5, em `migrations/2026-08-19-pv-emails.sql`: `pv_batches.locale` e
+`pv_batches.site_host` (idioma e hostname do parceiro nos emails do lote), `pv_vouchers.welcome_email_at` (trava do envio de
+boas-vindas) e `pv_redeem_attempts.pin_email_due` / `pin_email_at` (fila e
+auditoria do email de PIN).
 
 **Máquina de estados do voucher:**
 `EMITIDO → PROCESSING → USADO`; `CANCELADO` sai de `EMITIDO`; **`VENCIDO` não é
@@ -126,7 +132,15 @@ terminais é branca (`TERMINAL_ERROR_STATUS`, em `lib/lapak.mjs`).
 
 **6. PIN não é gravado em lugar nenhum** — nem no banco, nem em log. Passa em
 memória pela function e sobe na resposta. A reexibição de 24h rebusca na Lapak
-pelo tid.
+pelo tid. **Exceção deliberada do Brief 5:** ele vai em claro no corpo do email
+de entrega, o que cria cópias na infra da Resend e na caixa do portador. Foi a
+troca aceita para matar o chamado "fechei a aba antes de copiar". Continua sem
+coluna, sem log e sem cache nosso.
+
+**7. Falha de email NUNCA falha o resgate.** Todo envio vive atrás de
+`lib/mailer.mjs`, que não lança em hipótese alguma — chave ausente, Resend fora
+do ar e timeout devolvem `{ ok: false }`. O portador já pagou; o email é
+cortesia. Se algum dia um `throw` escapar de lá, é bug de severidade alta.
 
 **Achados do teste A0, que o desenho respeita:**
 - contrato do create: `count_order` (não `quantity`), `product_code`, e
@@ -183,7 +197,22 @@ pelo tid.
   carrega o código inteiro dentro dele.
 - **Não logar dado pessoal.** Email, CPF e `user_id` nunca vão pra log — nem em
   debug temporário. No máximo os nomes dos campos (`Object.keys(clean)`).
-- **Não logar PIN.** Nunca, nem truncado. Ele não é persistido também.
+- **Não logar PIN.** Nunca, nem truncado. Ele não é persistido também. O corpo
+  do email (que o contém) também não vai pra log.
+- **Não logar endereço de email.** Nem no fluxo de envio. O que pode aparecer é
+  o **domínio** (`recipientDomain()`), que responde "está falhando só num
+  provedor?" sem identificar ninguém. O corpo de erro da Resend não é lido: em
+  422 ela ecoa o destinatário de volta.
+- **URL de email nunca vem do header `Host`.** Ela sai de
+  `pv_batches.site_host`, que é dado de admin. O `/api/redeem` aceita request
+  sem `Origin`, então um `Host` forjado colocaria um link de phishing dentro de
+  um email assinado com o nosso DKIM. Há `CHECK` na coluna e revalidação em
+  `resolveSiteHost()` — hostname malformado cai no default, nunca vira `href`.
+- **`RESEND_API_KEY` só em env var do Netlify**, e **por contexto**: rotacionar
+  exige trocar em Production **e** em Deploy Previews, separadamente.
+- **Email transacional não depende de `marketing_optin`.** O optin governa só
+  marketing futuro; confirmação de resgate e entrega de código são execução do
+  que a pessoa pediu.
 - **IP cru não é persistido.** Só `HMAC(salt, ip)`.
 - **CORS restrito** ao próprio domínio + URLs de deploy do site.
 - Mudança em RLS, em rate limit ou na uniformidade das mensagens = **modo
@@ -221,7 +250,7 @@ outro repo), multi-idioma, reenvio de PIN por e-mail, carrinho, pagamento.
 ## 9. Comandos úteis
 
 ```bash
-npm test                     # 122 testes, Supabase e Lapak stubados
+npm test                     # 158 testes, Supabase, Lapak e Resend stubados
 npm run check:secrets        # secrets/SKU/credencial no bundle público
 node tests/dev-server.mjs    # harness local em :8000, functions reais
 ```
@@ -252,6 +281,13 @@ inclusive códigos que exercitam falha do fornecedor e timeout ambíguo.
   Procurar a order no painel da Lapak pelo horário e pelo SKU **antes** de
   mexer no voucher à mão. Nunca liberar sem confirmar que não houve entrega.
 - **Resgate concluído mas o portador perdeu o PIN:** dentro de 24h ele reaparece
-  no `/api/status`. Depois disso, buscar pelo `order_ref` (tid) do voucher no
-  `order_status` da Lapak.
+  no `/api/status` e no email de entrega. Depois disso, buscar pelo `order_ref`
+  (tid) do voucher no `order_status` da Lapak.
+- **Email não chegou:** `SELECT pin_email_due, pin_email_at FROM
+  pv_redeem_attempts WHERE ...`. `due=true` significa que a reconciliação vai
+  reenviar sozinha no próximo tick, dentro de 24h do resgate. Passada a janela,
+  o reenvio não acontece mais — recuperar o PIN pelo tid, à mão. Nenhum
+  problema de email afeta o status do voucher.
+- **Parar os emails sem deploy:** remover `RESEND_API_KEY` do painel do
+  Netlify. Os resgates seguem normais e nada mais é enviado.
 - **Rollback do banco:** bloco comentado no fim de cada migration.
