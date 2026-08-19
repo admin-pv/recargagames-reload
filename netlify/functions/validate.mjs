@@ -30,6 +30,7 @@ import { serverConfig, MisconfiguredError, UpstreamError } from "../../lib/supab
 import { hitRateLimit, retryAfterSeconds, MAX_ATTEMPTS } from "../../lib/rate-limit.mjs";
 import { normalizeCode, isPlausibleCode, findVoucher, evaluateVoucher } from "../../lib/vouchers.mjs";
 import { fieldsForContent, purposeNote } from "../../lib/forms.mjs";
+import { loadSkuMap } from "../../lib/sku-map.mjs";
 
 export const config = { path: "/api/validate" };
 
@@ -113,6 +114,25 @@ export default async (req, context) => {
     return json(200, { valid: false, reason: verdict.reason }, cors);
   }
 
+  // Catálogo de tipo de entrega (Brief 6). Carregado só DEPOIS do veredito
+  // do voucher, de propósito: quem está varrendo códigos inválidos não
+  // ganha uma leitura extra de banco por tentativa.
+  //
+  // Falha aqui é 503, nunca "segue sem o mapa": sem ele não dá pra afirmar
+  // se um SKU entrega PIN ou top-up, e adivinhar é o erro que o Brief 3
+  // fechou. Não há fallback pro forms-map.json — duas fontes de verdade
+  // fariam o comportamento mudar em silêncio justamente durante o incidente.
+  let skuMap;
+  try {
+    skuMap = await loadSkuMap(cfg);
+  } catch (err) {
+    if (err instanceof UpstreamError) {
+      console.error(`[validate] sku map indisponível code=${label} ${err.message}`);
+      return json(503, { error: "temporarily_unavailable" }, cors);
+    }
+    throw err;
+  }
+
   // FAIL-CLOSED: conteúdo cujo formulário não pode ser resolvido (SKU DTU
   // fora do forms-map) é RECUSADO, não oferecido com formulário genérico.
   // Pedir o campo errado entrega no lugar errado, e DTU não tem reembolso.
@@ -120,7 +140,7 @@ export default async (req, context) => {
   // outros conteúdos válidos do mesmo voucher.
   const contents = [];
   for (const content of verdict.contents) {
-    const form = fieldsForContent(content);
+    const form = fieldsForContent(content, skuMap);
     if (!form.ok) {
       console.error(
         `[validate] ${form.reason}: conteúdo recusado, sku=${content.product_code} content_id=${content.id}`
