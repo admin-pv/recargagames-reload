@@ -31,6 +31,7 @@ import { hitRateLimit, retryAfterSeconds, MAX_ATTEMPTS } from "../../lib/rate-li
 import { normalizeCode, isPlausibleCode, findVoucher, evaluateVoucher } from "../../lib/vouchers.mjs";
 import { fieldsForContent, purposeNote } from "../../lib/forms.mjs";
 import { loadSkuMap } from "../../lib/sku-map.mjs";
+import { resolveLocale } from "../../lib/locale.mjs";
 
 export const config = { path: "/api/validate" };
 
@@ -84,6 +85,12 @@ export default async (req, context) => {
 
   const code = normalizeCode(body.value.code);
   const label = codeLabel(code, cfg.salt);
+
+  // Locale do cliente (Brief 7): vem do hostname que serviu a página. É
+  // entrada NÃO CONFIÁVEL — resolveLocale devolve o default pra qualquer
+  // coisa fora da lista, sem estourar. O impacto é só qual idioma sai;
+  // nenhuma decisão de dinheiro depende disto.
+  const locale = resolveLocale(body.value.locale);
 
   if (!isPlausibleCode(code)) {
     // Mesma resposta de código inexistente: nada de dica de formato.
@@ -140,7 +147,7 @@ export default async (req, context) => {
   // outros conteúdos válidos do mesmo voucher.
   const contents = [];
   for (const content of verdict.contents) {
-    const form = fieldsForContent(content, skuMap);
+    const form = fieldsForContent(content, skuMap, locale);
     if (!form.ok) {
       console.error(
         `[validate] ${form.reason}: conteúdo recusado, sku=${content.product_code} content_id=${content.id}`
@@ -175,6 +182,7 @@ export default async (req, context) => {
     code: label,
     batch_id: verdict.batch.id,
     contents: contents.length,
+    locale,
   });
 
   return json(
@@ -185,7 +193,7 @@ export default async (req, context) => {
       expires_at: verdict.batch.expires_at,
       // Copy da linha de finalidade vem do servidor (forms-map.json) pra
       // não ter duas fontes de verdade com o texto legal.
-      purpose_note: purposeNote(),
+      purpose_note: purposeNote(locale),
       contents,
     },
     cors

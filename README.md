@@ -45,12 +45,13 @@ lib/                    módulos server-side (fora de functions/ de propósito)
   vouchers.mjs          busca + avaliação de voucher (SÓ LEITURA)
   forms.mjs             SKU → categoria → campos, trava SKU × tipo, validação
   sku-map.mjs           catálogo SKU → PIN/DTU, lido de pv_sku_delivery_map
+  locale.mjs            idiomas suportados e a precedência entre eles
   mailer.mjs            envio via Resend — NUNCA lança, falha vira { ok: false }
   email-templates.mjs   templates pt-BR / es-MX (funções puras)
   notify.mjs            decide, monta, manda e registra os dois emails
   redeem.mjs            claim atômico, trilha de tentativas, fechamento
   lapak.mjs             cliente do proxy: create, order_status, parsing do PIN
-forms-map.json          mapa estático de formulários (o tipo de entrega saiu daqui)
+forms-map.json          mapa estático de formulários, com textos pt-BR e es-MX
 migrations/             SQL aplicado manualmente no Supabase
 tests/                  suíte com Supabase e Lapak stubados + harness local
 ```
@@ -227,6 +228,76 @@ pro `player_data` do voucher. O IP cru não é gravado em lugar nenhum.
 - **A chave admin do proxy não existe neste repo.** O app usa a
   `PROXY_RELOAD_KEY`, que tem escopo próprio e é revogável sozinha;
   `tests/check-secrets.sh` reprova se alguém introduzir a admin.
+
+## Idiomas e hostname (Brief 7)
+
+O app serve **dois mercados no mesmo site Netlify**, escolhidos pelo hostname:
+
+| Hostname | Locale | Formulário |
+|---|---|---|
+| `reload.recargagames.com` | `pt-BR` | com CPF (opcional) |
+| `plusmo.recargagames.com` | `es-MX` | **sem CPF** |
+| qualquer outro | `pt-BR` | com CPF |
+
+**A copy vive em dois lugares, e a divisão é deliberada:**
+
+- **Casca** (títulos, botões, mensagens de estado) → `public/i18n.js`, por chave.
+  O texto pt-BR está escrito no `index.html`; o dicionário só é consultado
+  quando o locale é outro. Se o `i18n.js` falhar em carregar, o site brasileiro
+  continua inteiro.
+- **Campos do formulário** (label, placeholder, help) e a linha de finalidade →
+  **servidor**, no `forms-map.json`, já traduzidos na resposta do
+  `/api/validate`. O front não tem dicionário de campo, e não deve ganhar um:
+  seria uma segunda fonte de verdade.
+
+**O CPF não é escondido, ele não existe.** No `forms-map.json` o campo declara
+`"locales": ["pt-BR"]`, então em `es-MX` o servidor não o envia — não há o que
+renderizar nem o que mandar de volta. E se um payload `es-MX` chegar com `cpf`
+preenchido, o `/api/redeem` **recusa** (400) em vez de descartar em silêncio:
+seria ou um front desatualizado ainda coletando documento de brasileiro de quem
+não é, ou chamada à mão. Os dois precisam aparecer.
+
+### Testar o es-MX antes do DNS existir
+
+Em **Deploy Preview**, `localhost` e `127.0.0.1`, o locale aceita override por
+query param:
+
+```
+https://deploy-preview-N--reload.netlify.app/?locale=es-MX
+http://localhost:8000/?locale=es-MX          # com node tests/dev-server.mjs
+```
+
+Em **produção o override é ignorado** — o idioma é propriedade do domínio. Um
+link `?locale=` circulando geraria chamado com print de uma tela que ninguém
+consegue reproduzir.
+
+### Ligar o hostname da Plusmo (Netlify + DNS)
+
+Passo a passo, na ordem. Nada aqui exige deploy:
+
+1. **Netlify → Site configuration → Domain management → Add domain alias**:
+   `plusmo.recargagames.com`. É *alias* do mesmo site, não site novo — é o que
+   mantém a mesma origem e faz o CORS funcionar sem tocar em código.
+2. **DNS**: se `recargagames.com` já é gerenciado pelo Netlify DNS, o alias cria
+   o registro sozinho. Se for DNS externo, criar `CNAME plusmo` apontando para o
+   host do site Netlify (`<site>.netlify.app`).
+3. **Esperar o certificado**: o Netlify emite o TLS automaticamente depois que o
+   DNS propaga. Enquanto isso o hostname responde com aviso de certificado.
+4. **Conferir**: abrir `https://plusmo.recargagames.com` e ver a tela em
+   espanhol, sem campo de CPF.
+5. **Marcar o lote da campanha:**
+   ```sql
+   UPDATE public.pv_batches
+      SET locale = 'es-MX', site_host = 'plusmo.recargagames.com'
+    WHERE name = '<nome do lote da Plusmo>';
+   ```
+   Isso governa os **emails** (idioma e o link do rodapé). O idioma da *tela*
+   vem do hostname; o do email tem o lote como fallback, para o caso de a
+   reconciliação mandar o email quando não há cliente nenhum na linha.
+
+**Nada disso afeta `reload.recargagames.com`**, que continua no caminho pt-BR.
+
+---
 
 ## Deploy e emergência
 

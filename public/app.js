@@ -15,10 +15,47 @@
    - Validação daqui é conveniência de UX. A que conta é a da function.
    - NUNCA reenviar /api/redeem automaticamente. O create da Lapak não tem
      idempotência: um segundo envio é uma segunda cobrança.
+   - i18n (Brief 7): as strings da CASCA vêm do i18n.js, por chave. As dos
+     CAMPOS do formulário vêm do SERVIDOR, já traduzidas — não há, e não
+     deve haver, dicionário de campo aqui. É por isso que o CPF some em
+     es-MX sem nenhum `if` neste arquivo: o servidor não manda o campo.
    ===================================================================== */
 
 (() => {
   "use strict";
+
+  /* ------------------------------ i18n ------------------------------ */
+
+  // Se o i18n.js não carregar, `t()` devolve o fallback e o app segue em
+  // pt-BR — que é exatamente o texto já escrito no index.html.
+  const I18N = window.RG_I18N || { locale: "pt-BR", t: (_k, fallback) => fallback, has: () => false };
+  const LOCALE = I18N.locale;
+  const t = (key, fallback) => I18N.t(key, fallback);
+
+  /**
+   * Reescreve o HTML estático quando o locale não é o padrão.
+   *
+   * Só roda se houver dicionário: em pt-BR nada é tocado, e é isso que
+   * garante que reload.recargagames.com renderize byte a byte igual.
+   */
+  function applyStaticI18n() {
+    if (!I18N.has()) return;
+
+    document.documentElement.lang = t("html.lang", document.documentElement.lang);
+    document.title = t("doc.title", document.title);
+    const description = document.querySelector('meta[name="description"]');
+    if (description) description.content = t("doc.description", description.content);
+
+    for (const node of document.querySelectorAll("[data-i18n]")) {
+      node.textContent = t(node.dataset.i18n, node.textContent);
+    }
+    for (const node of document.querySelectorAll("[data-i18n-aria-label]")) {
+      node.setAttribute(
+        "aria-label",
+        t(node.dataset.i18nAriaLabel, node.getAttribute("aria-label"))
+      );
+    }
+  }
 
   const SCREENS = ["code", "contents", "form", "processing", "result"];
   const STEP_OF_SCREEN = {
@@ -36,17 +73,35 @@
   const POLL_BACKOFF_MS = 15000; // quando o servidor pede calma (429)
   const POLL_MAX_MS = 5 * 60 * 1000;
 
+  // Os textos em português são o fallback: se o dicionário não tiver a
+  // chave, é isto que aparece. Nenhuma mensagem pode sumir por falta de
+  // tradução — a uniformidade da recusa é regra inegociável do repo.
   const MSG = {
-    invalid:
-      "Código inválido ou indisponível. Confira se digitou certo — se estiver certo, ele pode já ter sido usado, cancelado ou vencido.",
-    processing:
-      "Este voucher já tem um resgate em andamento. Aguarde alguns minutos e tente novamente.",
+    get invalid() {
+      return t(
+        "msg.invalid",
+        "Código inválido ou indisponível. Confira se digitou certo — se estiver certo, ele pode já ter sido usado, cancelado ou vencido."
+      );
+    },
+    get processing() {
+      return t(
+        "msg.processing",
+        "Este voucher já tem um resgate em andamento. Aguarde alguns minutos e tente novamente."
+      );
+    },
     rateLimited: (min) =>
-      `Muitas tentativas em pouco tempo. Por segurança, espere ${min} e tente de novo.`,
-    network:
-      "Não conseguimos falar com o servidor. Verifique sua conexão e tente novamente.",
-    server:
-      "Tivemos um problema por aqui. Tente novamente em alguns instantes.",
+      t("msg.rateLimited.before", "Muitas tentativas em pouco tempo. Por segurança, espere ") +
+      min +
+      t("msg.rateLimited.after", " e tente de novo."),
+    get network() {
+      return t(
+        "msg.network",
+        "Não conseguimos falar com o servidor. Verifique sua conexão e tente novamente."
+      );
+    },
+    get server() {
+      return t("msg.server", "Tivemos um problema por aqui. Tente novamente em alguns instantes.");
+    },
   };
 
   // Estado da sessão de resgate — memória, só isso.
@@ -154,7 +209,8 @@
   function showAlert(node, text, tone) {
     node.textContent = "";
     const strong = document.createElement("b");
-    strong.textContent = tone === "info" ? "Atenção: " : "Não foi possível: ";
+    strong.textContent =
+      tone === "info" ? t("alert.info", "Atenção: ") : t("alert.error", "Não foi possível: ");
     node.append(strong, document.createTextNode(text));
     node.classList.toggle("alert-info", tone === "info");
     node.dataset.show = "true";
@@ -182,13 +238,14 @@
 
   function humanMinutes(seconds) {
     const min = Math.max(1, Math.ceil((Number(seconds) || 600) / 60));
-    return min === 1 ? "1 minuto" : `${min} minutos`;
+    if (min === 1) return t("time.minute", "1 minuto");
+    return t("time.minutes.before", "") + min + t("time.minutes.after", " minutos");
   }
 
   function formatDate(iso) {
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return "—";
-    return new Intl.DateTimeFormat("pt-BR", {
+    return new Intl.DateTimeFormat(LOCALE, {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
@@ -246,14 +303,14 @@
     const code = refs.code.value.trim().toUpperCase();
     if (code.length < 4) {
       refs.code.setAttribute("aria-invalid", "true");
-      refs.codeError.textContent = "Digite o código completo do voucher.";
+      refs.codeError.textContent = t("code.incomplete", "Digite o código completo do voucher.");
       refs.codeError.hidden = false;
       refs.code.focus();
       return;
     }
 
-    setBusy(refs.btnValidate, true, "Validando…");
-    const result = await api("/api/validate", { code });
+    setBusy(refs.btnValidate, true, t("code.submit.busy", "Validando…"));
+    const result = await api("/api/validate", { code, locale: LOCALE });
     setBusy(refs.btnValidate, false);
 
     if (result.kind === "network") return showAlert(refs.alertCode, MSG.network);
@@ -269,7 +326,7 @@
     }
 
     state.code = code;
-    state.batchName = data.batch_name || "Voucher de Parceiro";
+    state.batchName = data.batch_name || t("brand.product", "Voucher de Parceiro");
     state.expiresAt = data.expires_at;
     state.purposeNote = data.purpose_note || null;
     state.contents = Array.isArray(data.contents) ? data.contents : [];
@@ -286,7 +343,10 @@
   function badgeFor(deliveryType) {
     const badge = document.createElement("span");
     badge.className = `badge ${deliveryType === "PIN" ? "badge-pin" : "badge-dtu"}`;
-    badge.textContent = deliveryType === "PIN" ? "Código PIN" : "Entrega no seu ID";
+    badge.textContent =
+      deliveryType === "PIN"
+        ? t("badge.pin", "Código PIN")
+        : t("badge.dtu", "Entrega no seu ID");
     return badge;
   }
 
@@ -497,7 +557,7 @@
         // Booleano sempre vai no payload, marcado ou não: o Brief 3 precisa
         // saber que houve escolha explícita, e não ausência de resposta.
         if (input.dataset.required === "true" && !input.checked) {
-          message = "É preciso marcar esta opção.";
+          message = t("field.checkRequired", "É preciso marcar esta opção.");
         } else {
           data[field] = input.checked;
         }
@@ -513,15 +573,19 @@
       const digits = value.replace(/\D/g, "");
 
       if (!value) {
-        if (input.dataset.required === "true") message = "Preencha este campo.";
+        if (input.dataset.required === "true") message = t("field.required", "Preencha este campo.");
       } else if (type === "email" && !EMAIL_RE.test(value)) {
-        message = "Digite um email válido.";
+        message = t("field.email", "Digite um email válido.");
       } else if (type === "cpf" && digits.length !== 11) {
+        // Sem chave de i18n DE PROPÓSITO: o CPF só existe no locale
+        // pt-BR (forms-map.json, `locales: ["pt-BR"]`), então o servidor
+        // nunca declara o campo em es-MX e estas mensagens não têm como
+        // ser alcançadas lá. Traduzi-las sugeriria uma tela que não existe.
         message = "O CPF precisa ter 11 dígitos.";
       } else if (type === "cpf" && !isValidCpf(digits)) {
         message = "CPF inválido — confira os números.";
       } else if (type === "number" && !/^[0-9]+$/.test(value)) {
-        message = "Use somente números.";
+        message = t("field.numeric", "Use somente números.");
       } else if (input.dataset.minLength && value.length < Number(input.dataset.minLength)) {
         message = `Precisa ter pelo menos ${input.dataset.minLength} dígitos.`;
       } else if (input.dataset.maxLength && value.length > Number(input.dataset.maxLength)) {
@@ -559,18 +623,25 @@
     if (content.delivery_type !== "PIN" && !refs.dtuConfirm.checked) {
       showAlert(
         refs.alertForm,
-        "Marque a confirmação de que os dados estão corretos antes de continuar.",
+        t(
+          "dtu.confirmRequired",
+          "Marque a confirmação de que os dados estão corretos antes de continuar."
+        ),
         "info"
       );
       refs.dtuConfirm.focus();
       return;
     }
 
-    setBusy(refs.btnRedeem, true, "Enviando…");
+    setBusy(refs.btnRedeem, true, t("form.submit.busy", "Enviando…"));
     const result = await api("/api/redeem", {
       code: state.code,
       content_id: content.id,
       player_data: playerData,
+      // O locale vai junto: decide quais campos o servidor considera
+      // declarados (o CPF não existe em es-MX) e em que idioma os emails
+      // do Brief 5 saem.
+      locale: LOCALE,
     });
     setBusy(refs.btnRedeem, false);
 
@@ -675,15 +746,24 @@
       success: {
         icon: "🎉",
         tone: "ok",
-        title: "Resgate concluído",
+        title: t("result.success.title", "Resgate concluído"),
         message: !isPin
-          ? "Pronto! O conteúdo foi entregue direto na conta do ID que você informou."
+          ? t(
+              "result.success.dtu",
+              "Pronto! O conteúdo foi entregue direto na conta do ID que você informou."
+            )
           : payload.pin
-            ? "Seu código PIN está aqui embaixo. Use-o no jogo para receber o conteúdo."
-            : "O resgate foi concluído.",
+            ? t(
+                "result.success.pin",
+                "Seu código PIN está aqui embaixo. Use-o no jogo para receber o conteúdo."
+              )
+            : t("result.success.plain", "O resgate foi concluído."),
         detail: isPin
           ? null
-          : "A entrega pode levar alguns minutos para aparecer no jogo. Se não aparecer, fale com o suporte com este voucher em mãos.",
+          : t(
+              "result.success.dtuDetail",
+              "A entrega pode levar alguns minutos para aparecer no jogo. Se não aparecer, fale com o suporte com este voucher em mãos."
+            ),
       },
       // Falha depois do disparo: o servidor já devolveu o voucher, então
       // dá pra escolher outro conteúdo sem sair da sessão.
@@ -692,7 +772,7 @@
         tone: "warn",
         // A mensagem do servidor já diz que o código continua válido; um
         // detail repetindo isso só empurra os botões pra baixo.
-        title: "Não deu pra concluir",
+        title: t("result.failed.title", "Não deu pra concluir"),
         message: serverMessage || MSG.server,
         detail: null,
         retry: true,
@@ -702,33 +782,42 @@
       timeout: {
         icon: "⏳",
         tone: "info",
-        title: "Ainda processando",
-        message:
-          "O fornecedor está demorando mais que o normal. Seu resgate continua em andamento — não é preciso fazer nada.",
-        detail:
-          "Consulte seu código mais tarde nesta mesma tela para ver o resultado. Não tente resgatar de novo agora.",
+        title: t("result.slow.title", "Ainda processando"),
+        message: t(
+          "result.slow.message",
+          "O fornecedor está demorando mais que o normal. Seu resgate continua em andamento — não é preciso fazer nada."
+        ),
+        detail: t(
+          "result.slow.detail",
+          "Consulte seu código mais tarde nesta mesma tela para ver o resultado. Não tente resgatar de novo agora."
+        ),
       },
       maintenance: {
         icon: "🛠",
         tone: "info",
-        title: "Resgate em manutenção",
+        title: t("result.maintenance.title", "Resgate em manutenção"),
         message:
           serverMessage ||
-          "O resgate está em manutenção neste momento. Tente novamente mais tarde.",
-        detail:
-          "Seu código NÃO foi usado e continua válido. Nada foi entregue e nada foi cobrado.",
+          t(
+            "result.maintenance.message",
+            "O resgate está em manutenção neste momento. Tente novamente mais tarde."
+          ),
+        detail: t(
+          "result.maintenance.detail",
+          "Seu código NÃO foi usado e continua válido. Nada foi entregue e nada foi cobrado."
+        ),
       },
       processing: {
         icon: "⏳",
         tone: "info",
-        title: "Resgate em andamento",
+        title: t("result.inProgress.title", "Resgate em andamento"),
         message: MSG.processing,
         detail: null,
       },
       invalid_or_unavailable: {
         icon: "⚠",
         tone: "warn",
-        title: "Código indisponível",
+        title: t("result.unavailable.title", "Código indisponível"),
         message: MSG.invalid,
         detail: null,
       },
@@ -737,7 +826,7 @@
     const view = views[status] || {
       icon: "⚠",
       tone: "warn",
-      title: "Não deu pra concluir",
+      title: t("result.failed.title", "Não deu pra concluir"),
       message: MSG.server,
       detail: null,
     };
@@ -779,7 +868,7 @@
     if (!pin) return;
     try {
       await navigator.clipboard.writeText(pin);
-      refs.pinCopied.textContent = "Código copiado.";
+      refs.pinCopied.textContent = t("pin.copied", "Código copiado.");
     } catch {
       // Clipboard bloqueado (permissão, contexto inseguro): seleciona o
       // texto pro usuário copiar à mão em vez de deixar sem saída.
@@ -788,7 +877,7 @@
       const selection = window.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
-      refs.pinCopied.textContent = "Selecione e copie o código acima.";
+      refs.pinCopied.textContent = t("pin.copyManual", "Selecione e copie o código acima.");
     }
   });
 
@@ -827,6 +916,7 @@
     refs.code.focus();
   });
 
+  applyStaticI18n();
   showScreen("code");
   refs.code.focus({ preventScroll: true });
 })();

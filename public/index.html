@@ -15,6 +15,17 @@
 </head>
 <body>
 
+<!-- ============================ i18n (Brief 7) ============================
+     O texto em português está ESCRITO NESTE ARQUIVO, não injetado por JS.
+     Os atributos data-i18n só são consultados quando o locale não é pt-BR.
+
+     Isso é deliberado e tem duas consequências boas:
+       1. reload.recargagames.com renderiza igual mesmo se o i18n.js falhar
+          em carregar — o site brasileiro não depende dele pra nada;
+       2. não existe flash de texto trocado: o que o browser pinta primeiro
+          já é o texto final do locale padrão.
+     ====================================================================== -->
+
 <div class="atmosphere" aria-hidden="true"></div>
 
 <header class="topbar">
@@ -22,28 +33,28 @@
     <span class="brand-mark" aria-hidden="true"></span>
     <span class="brand-text">
       Recarga Games
-      <small>Voucher de Parceiro</small>
+      <small data-i18n="brand.product">Voucher de Parceiro</small>
     </span>
   </div>
 </header>
 
 <main class="wrap">
 
-  <ol class="steps" id="steps" aria-label="Progresso do resgate">
-    <li data-n="1" data-state="current" data-step="code">Código</li>
-    <li data-n="2" data-state="todo" data-step="contents">Conteúdo</li>
-    <li data-n="3" data-state="todo" data-step="form">Confirmação</li>
+  <ol class="steps" id="steps" aria-label="Progresso do resgate" data-i18n-aria-label="steps.aria">
+    <li data-n="1" data-state="current" data-step="code" data-i18n="step.code">Código</li>
+    <li data-n="2" data-state="todo" data-step="contents" data-i18n="step.contents">Conteúdo</li>
+    <li data-n="3" data-state="todo" data-step="form" data-i18n="step.form">Confirmação</li>
   </ol>
 
   <!-- ============ TELA 1 — inserir código ============ -->
   <section id="screen-code" aria-labelledby="title-code">
-    <p class="eyebrow">Voucher de Parceiro</p>
-    <h1 id="title-code">Resgate seu <span class="grad-text">prêmio</span></h1>
-    <p class="lede">Digite o código do seu voucher para ver o que você pode resgatar.</p>
+    <p class="eyebrow" data-i18n="code.eyebrow">Voucher de Parceiro</p>
+    <h1 id="title-code"><span data-i18n="code.title.before">Resgate seu </span><span class="grad-text" data-i18n="code.title.grad">prêmio</span></h1>
+    <p class="lede" data-i18n="code.lede">Digite o código do seu voucher para ver o que você pode resgatar.</p>
 
     <form id="form-code" novalidate>
       <div class="field">
-        <label for="code">Código do voucher</label>
+        <label for="code" data-i18n="code.label">Código do voucher</label>
         <input
           id="code"
           name="code"
@@ -57,12 +68,12 @@
           placeholder="XXXX-XXXXXXXXXX"
           aria-describedby="code-help"
           required>
-        <p class="field-help" id="code-help">Do jeito que está no seu voucher, com ou sem o traço.</p>
+        <p class="field-help" id="code-help" data-i18n="code.help">Do jeito que está no seu voucher, com ou sem o traço.</p>
         <p class="field-error" id="code-error" hidden></p>
       </div>
 
       <div class="actions">
-        <button type="submit" class="btn btn-primary btn-block" id="btn-validate">Validar código</button>
+        <button type="submit" class="btn btn-primary btn-block" id="btn-validate" data-i18n="code.submit">Validar código</button>
       </div>
     </form>
 
@@ -73,23 +84,23 @@
   <section id="screen-contents" aria-labelledby="title-contents" hidden>
     <div class="batch-strip">
       <span><b id="batch-name"></b></span>
-      <span>Válido até <b id="batch-expires"></b></span>
+      <span><span data-i18n="contents.validUntil">Válido até</span> <b id="batch-expires"></b></span>
     </div>
 
-    <h2 id="title-contents">Escolha seu <span class="grad-text">conteúdo</span></h2>
-    <p class="lede">Você pode resgatar <b>um</b> item deste voucher. A escolha é definitiva.</p>
+    <h2 id="title-contents"><span data-i18n="contents.title.before">Escolha seu </span><span class="grad-text" data-i18n="contents.title.grad">conteúdo</span></h2>
+    <p class="lede"><span data-i18n="contents.lede.before">Você pode resgatar </span><b data-i18n="contents.lede.bold">um</b><span data-i18n="contents.lede.after"> item deste voucher. A escolha é definitiva.</span></p>
 
-    <div class="card-list" id="contents-list" role="group" aria-label="Conteúdos disponíveis"></div>
+    <div class="card-list" id="contents-list" role="group" aria-label="Conteúdos disponíveis" data-i18n-aria-label="contents.aria"></div>
 
     <div class="actions">
-      <button type="button" class="btn btn-primary btn-block" id="btn-continue" disabled>Continuar</button>
-      <button type="button" class="btn btn-ghost" data-back="code">← Usar outro código</button>
+      <button type="button" class="btn btn-primary btn-block" id="btn-continue" disabled data-i18n="contents.continue">Continuar</button>
+      <button type="button" class="btn btn-ghost" data-back="code" data-i18n="contents.back">← Usar outro código</button>
     </div>
   </section>
 
   <!-- ============ TELA 3 — formulário dinâmico ============ -->
   <section id="screen-form" aria-labelledby="title-form" hidden>
-    <h2 id="title-form">Confirme os <span class="grad-text">dados</span></h2>
+    <h2 id="title-form"><span data-i18n="form.title.before">Confirme os </span><span class="grad-text" data-i18n="form.title.grad">dados</span></h2>
 
     <div class="summary">
       <span class="card-icon" aria-hidden="true" id="summary-icon">🎁</span>
@@ -103,14 +114,19 @@
       <!-- Contexto da entrega (só PIN). Vem antes dos campos: primeiro o
            que você recebe, depois o que a gente precisa de você. -->
       <div class="info-block" id="pin-info" hidden>
-        <p class="muted">Este conteúdo é entregue como <b>código PIN</b>. O código aparece na tela ao final do resgate.</p>
+        <p class="muted"><span data-i18n="form.pinInfo.before">Este conteúdo é entregue como </span><b data-i18n="form.pinInfo.bold">código PIN</b><span data-i18n="form.pinInfo.after">. O código aparece na tela ao final do resgate.</span></p>
       </div>
 
-      <!-- Campos de dado (entrega + contato). Preenchido pelo app.js. -->
+      <!-- Campos de dado (entrega + contato). Preenchido pelo app.js com o
+           que o /api/validate devolveu — JÁ no idioma do locale, porque o
+           formulário é dirigido pelo servidor (Brief 2, i18n no Brief 7).
+           É por isso que o CPF simplesmente não existe em es-MX: o
+           servidor não o envia, não há filtro aqui. -->
       <div id="fields"></div>
 
       <!-- Finalidade do tratamento, logo abaixo dos campos de dado pessoal
-           e antes do consentimento de marketing, que é separado. -->
+           e antes do consentimento de marketing, que é separado. Texto
+           também vem do servidor, no idioma certo. -->
       <p class="purpose-note" id="purpose-note" hidden></p>
 
       <!-- Checkboxes de consentimento (optin de marketing). -->
@@ -118,22 +134,22 @@
 
       <!-- Aviso obrigatório do fluxo DTU (Check ID OFF na Lapak). -->
       <div class="notice" id="dtu-notice" hidden>
-        <p class="notice-title">⚠ Entrega direta e definitiva</p>
+        <p class="notice-title" data-i18n="dtu.title">⚠ Entrega direta e definitiva</p>
         <ul>
-          <li>A recarga é entregue <b>diretamente no ID que você informar</b>, sem etapa de conferência.</li>
-          <li><b>Confira o ID antes de confirmar</b> — a conferência é responsabilidade sua.</li>
-          <li>Depois da entrega <b>não há reembolso, troca ou reversão</b>, mesmo se o ID estiver errado.</li>
+          <li><span data-i18n="dtu.item1.before">A recarga é entregue </span><b data-i18n="dtu.item1.bold">diretamente no ID que você informar</b><span data-i18n="dtu.item1.after">, sem etapa de conferência.</span></li>
+          <li><b data-i18n="dtu.item2.bold">Confira o ID antes de confirmar</b><span data-i18n="dtu.item2.after"> — a conferência é responsabilidade sua.</span></li>
+          <li><span data-i18n="dtu.item3.before">Depois da entrega </span><b data-i18n="dtu.item3.bold">não há reembolso, troca ou reversão</b><span data-i18n="dtu.item3.after">, mesmo se o ID estiver errado.</span></li>
         </ul>
       </div>
 
       <label class="check" id="dtu-confirm-wrap" hidden>
         <input type="checkbox" id="dtu-confirm">
-        <span>Confiro que os dados acima estão corretos e entendo que a entrega é definitiva.</span>
+        <span data-i18n="dtu.confirm">Confiro que os dados acima estão corretos e entendo que a entrega é definitiva.</span>
       </label>
 
       <div class="actions">
-        <button type="submit" class="btn btn-primary btn-block" id="btn-redeem">Confirmar resgate</button>
-        <button type="button" class="btn btn-ghost" data-back="contents">← Escolher outro conteúdo</button>
+        <button type="submit" class="btn btn-primary btn-block" id="btn-redeem" data-i18n="form.submit">Confirmar resgate</button>
+        <button type="button" class="btn btn-ghost" data-back="contents" data-i18n="form.back">← Escolher outro conteúdo</button>
       </div>
     </form>
 
@@ -147,12 +163,12 @@
        um segundo disparo seria uma segunda cobrança. -->
   <section id="screen-processing" class="result" aria-labelledby="title-processing" hidden>
     <div class="result-icon" aria-hidden="true"><span class="spinner spinner-lg"></span></div>
-    <h2 id="title-processing">Entregando seu <span class="grad-text">prêmio</span></h2>
-    <p class="lede" id="processing-message" role="status" aria-live="polite">
+    <h2 id="title-processing"><span data-i18n="processing.title.before">Entregando seu </span><span class="grad-text" data-i18n="processing.title.grad">prêmio</span></h2>
+    <p class="lede" id="processing-message" role="status" aria-live="polite" data-i18n="processing.lede">
       Estamos processando seu resgate com o fornecedor. Isso costuma levar alguns segundos.
     </p>
     <div class="info-block">
-      <p class="muted"><b>Não feche esta tela.</b> Seu voucher já foi reservado — o resultado aparece aqui assim que o fornecedor confirmar.</p>
+      <p class="muted"><b data-i18n="processing.warn.bold">Não feche esta tela.</b><span data-i18n="processing.warn.after"> Seu voucher já foi reservado — o resultado aparece aqui assim que o fornecedor confirmar.</span></p>
     </div>
   </section>
 
@@ -165,31 +181,32 @@
     <!-- Caixa do PIN. Só aparece em entrega por código; o valor é escrito
          com textContent pelo app.js e não passa por innerHTML. -->
     <div class="pin-box" id="result-pin" hidden>
-      <p class="pin-label">Seu código PIN</p>
+      <p class="pin-label" data-i18n="pin.label">Seu código PIN</p>
       <div class="pin-row">
         <code class="pin-value" id="pin-value"></code>
-        <button type="button" class="btn btn-copy" id="btn-copy-pin" aria-describedby="pin-copied">Copiar</button>
+        <button type="button" class="btn btn-copy" id="btn-copy-pin" aria-describedby="pin-copied" data-i18n="pin.copy">Copiar</button>
       </div>
       <p class="pin-serial" id="pin-serial" hidden></p>
       <p class="pin-copied" id="pin-copied" role="status" aria-live="polite"></p>
-      <p class="muted pin-warning"><b>Anote agora.</b> Resgate este código no jogo — ele fica disponível nesta tela por 24 horas.</p>
+      <p class="muted pin-warning"><b data-i18n="pin.warn.bold">Anote agora.</b><span data-i18n="pin.warn.after"> Resgate este código no jogo — ele fica disponível nesta tela por 24 horas.</span></p>
     </div>
 
     <div class="info-block" id="result-detail" hidden>
       <p class="muted" id="result-detail-text"></p>
     </div>
     <div class="actions">
-      <button type="button" class="btn btn-primary btn-block" id="btn-retry-content" hidden>Escolher outro conteúdo</button>
-      <button type="button" class="btn btn-outline btn-block" id="btn-restart">Voltar ao início</button>
+      <button type="button" class="btn btn-primary btn-block" id="btn-retry-content" hidden data-i18n="result.retryContent">Escolher outro conteúdo</button>
+      <button type="button" class="btn btn-outline btn-block" id="btn-restart" data-i18n="result.restart">Voltar ao início</button>
     </div>
   </section>
 
 </main>
 
-<footer class="site-foot">
+<footer class="site-foot" data-i18n="foot.text">
   Recarga Games · Voucher de Parceiro — resgate único por código.
 </footer>
 
+<script src="/i18n.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

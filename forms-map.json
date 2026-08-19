@@ -1,38 +1,47 @@
 {
-  "_comment_1": "MAPA ESTÁTICO de formulários — Brief 2. Fica no SERVIDOR (importado pelas Netlify Functions); o front nunca lê este arquivo direto, ele recebe só os campos já resolvidos pelo /api/validate.",
+  "_comment_1": "MAPA ESTÁTICO de formulários — Brief 2, com locale no Brief 7. Fica no SERVIDOR (importado pelas Netlify Functions); o front nunca lê este arquivo direto, ele recebe só os campos já resolvidos pelo /api/validate.",
   "_comment_2": "MELHORIA JÁ REGISTRADA (futuro): as categories passam a ser alimentadas pelo campo `forms` do Get Categories da Lapak, via proxy com cache. Os common_fields são nossos e continuam aqui.",
-  "version": 4,
+  "version": 5,
+
+  "_comment_locale": "BRIEF 7 — i18n. Cada texto visível tem a versão pt-BR na chave original (`label`, `help`, `placeholder`) e a es-MX no sufixo `_es`. A chave sem sufixo continua sendo o pt-BR EXATO de antes: é o que garante que reload.recargagames.com não mude byte nenhum. `locales` diz em QUAIS idiomas o campo existe — não é tradução, é presença: o campo ausente do array não é enviado pelo /api/validate naquele locale, então o front não tem como renderizar nem enviar. Campo sem `locales` existe em todos.",
 
   "_comment_3": "common_fields: pedidos em TODO resgate, DTU e PIN igual — são dados nossos (contato/antifraude), não da entrega. Ordem de renderização = ordem desta lista, com os checkboxes sempre no fim (ver forms.mjs).",
   "common_fields": [
     {
       "field": "email",
       "label": "Email",
+      "label_es": "Correo electrónico",
       "type": "email",
       "required": true,
       "placeholder": "voce@email.com",
+      "placeholder_es": "tu@correo.com",
       "help": "Usamos para falar com você sobre este resgate.",
+      "help_es": "Lo usamos para avisarte sobre este canje.",
       "max_length": 254
     },
     {
+      "_comment": "CPF só existe no Brasil. `locales: [pt-BR]` é o que faz o campo NÃO SER ENVIADO no locale es-MX — a ausência vem do servidor, não de um filtro no front. Por isso não há tradução aqui: não haveria onde exibi-la.",
       "field": "cpf",
       "label": "CPF (opcional)",
       "type": "cpf",
       "required": false,
       "placeholder": "000.000.000-00",
-      "help": "Ajuda a liberar o resgate mais rápido se cair em revisão."
+      "help": "Ajuda a liberar o resgate mais rápido se cair em revisão.",
+      "locales": ["pt-BR"]
     },
     {
       "field": "marketing_optin",
       "label": "Aceito receber novidades e ofertas da Recarga Games por email.",
+      "label_es": "Acepto recibir novedades y ofertas de Recarga Games por correo.",
       "type": "checkbox",
       "required": false,
       "default": false
     }
   ],
 
-  "_comment_4": "purpose_note: linha de finalidade exibida abaixo dos campos de dado pessoal. Texto no servidor (não hardcoded no front) pra ter uma única fonte de verdade.",
+  "_comment_4": "purpose_note: linha de finalidade exibida abaixo dos campos de dado pessoal. Texto no servidor (não hardcoded no front) pra ter uma única fonte de verdade. Sem citar lei específica — a frase descreve a finalidade, e ela é a mesma nos dois mercados.",
   "purpose_note": "Seus dados são usados para validação do resgate e prevenção a fraude.",
+  "purpose_note_es": "Tus datos se usan para validar el canje y prevenir fraudes.",
 
   "_comment_5": "categories: campos de ENTREGA, por categoria de SKU. delivery_type='PIN' não usa nada daqui (o código sai pra nós e é exibido).",
   "categories": {
@@ -42,10 +51,13 @@
         {
           "field": "user_id",
           "label": "ID do jogador",
+          "label_es": "ID de jugador",
           "type": "number",
           "required": true,
           "placeholder": "somente números",
+          "placeholder_es": "solo números",
           "help": "Abra o Free Fire, toque no avatar e copie o ID numérico do perfil.",
+          "help_es": "Abre Free Fire, toca tu avatar y copia el ID numérico del perfil.",
           "min_length": 6,
           "max_length": 15
         }

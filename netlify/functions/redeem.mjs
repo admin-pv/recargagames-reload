@@ -57,6 +57,7 @@ import {
 import { fieldsForContent, validatePlayerData } from "../../lib/forms.mjs";
 import { loadSkuMap } from "../../lib/sku-map.mjs";
 import { sendWelcome } from "../../lib/notify.mjs";
+import { resolveLocale, emailLocale } from "../../lib/locale.mjs";
 import { lapakConfig, redeemEnabled, createOrder, convertCost, LapakError } from "../../lib/lapak.mjs";
 import {
   claimVoucher,
@@ -145,6 +146,16 @@ export default async (req, context) => {
   const contentId = String(body.value.content_id ?? "");
   const label = codeLabel(code, cfg.salt);
 
+  // Locale do cliente (Brief 7), vindo do hostname que serviu a página.
+  //
+  // Duas resoluções diferentes, de propósito:
+  //   `locale`  — só o que o cliente mandou. Governa o FORMULÁRIO, e tem
+  //               que bater com o que a pessoa viu na tela: um lote
+  //               marcado es-MX aberto pelo site pt-BR não pode recusar
+  //               um CPF que o navegador dela renderizou.
+  //   `mailLang`— cliente, com o lote como fallback (ver lib/locale.mjs).
+  const locale = resolveLocale(body.value.locale);
+
   if (!isPlausibleCode(code) || !isUuid(contentId)) {
     logEvent({ evt: "redeem", result: "malformed", code: label });
     return json(200, { status: "invalid_or_unavailable" }, cors);
@@ -201,7 +212,7 @@ export default async (req, context) => {
   // portador — mas ele vê a mensagem genérica. Por isso o console.error
   // com o SKU: é o único jeito de o suporte distinguir "digitou errado"
   // de "nosso lote está furado" (lição do Brief 2 §8.3).
-  const form = fieldsForContent(content, skuMap);
+  const form = fieldsForContent(content, skuMap, locale);
   if (!form.ok) {
     console.error(
       `[redeem] ${form.reason}: conteúdo recusado, sku=${content.product_code} ` +
@@ -212,7 +223,7 @@ export default async (req, context) => {
     return json(200, { status: "invalid_or_unavailable" }, cors);
   }
 
-  const checked = validatePlayerData(form.fields, body.value.player_data);
+  const checked = validatePlayerData(form.fields, body.value.player_data, locale);
   if (!checked.ok) {
     logEvent({ evt: "redeem", result: "invalid_payload", code: label });
     return json(400, { status: "invalid_payload", errors: checked.errors }, cors);
@@ -259,6 +270,7 @@ export default async (req, context) => {
     content_id: content.id,
     delivery_type: content.delivery_type,
     attempt: claim.attemptNumber,
+    locale,
   };
 
   let attempt;
@@ -322,7 +334,7 @@ export default async (req, context) => {
     sendWelcome(cfg, {
       voucherId: claim.voucherId,
       email: checked.clean.email,
-      locale: verdict.batch.locale,
+      locale: emailLocale(body.value.locale, verdict.batch.locale),
       siteHost: verdict.batch.site_host,
       label,
     });
